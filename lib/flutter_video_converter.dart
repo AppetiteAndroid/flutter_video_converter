@@ -89,8 +89,13 @@ class FlutterVideoConverter {
       // Set up progress listener if callback is provided
       if (onProgress != null) {
         _progressChannel.receiveBroadcastStream().listen((dynamic event) {
-          if (event is double) {
-            // Send both the input path and the progress value
+          if (event is Map) {
+            // Extract path and progress from the map
+            final String path = event['path'] as String? ?? videoFile.path;
+            final double progress = event['progress'] as double? ?? 0.0;
+            onProgress(path, progress);
+          } else if (event is double) {
+            // Backward compatibility for platforms that only send progress
             onProgress(videoFile.path, event);
           }
         });

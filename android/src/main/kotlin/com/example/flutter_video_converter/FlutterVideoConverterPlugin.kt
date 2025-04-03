@@ -133,6 +133,15 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     }
   }
   
+  private fun updateProgressWithPath(inputPath: String, progress: Double) {
+    mainHandler.post {
+      val progressData = HashMap<String, Any>()
+      progressData["path"] = inputPath
+      progressData["progress"] = progress
+      progressSink?.success(progressData)
+    }
+  }
+  
   private fun convertMultipleVideosToMp4(videoPaths: List<String>): List<String> {
     val outputPaths = mutableListOf<String>()
     val totalVideos = videoPaths.size
@@ -349,7 +358,7 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
         if (totalDuration > 0) {
           val videoProgress = bufferInfo.presentationTimeUs.toDouble() / totalDuration.toDouble()
           val scaledProgress = startProgress + (videoProgress * progressRange)
-          updateProgress(scaledProgress)
+          updateProgressWithPath(inputPath, scaledProgress)
         }
         
         extractor.advance()
@@ -359,7 +368,7 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     }
     
     // Update progress to the end of this video's range
-    updateProgress(endProgress)
+    updateProgressWithPath(inputPath, endProgress)
     
     // Release resources
     muxer.stop()

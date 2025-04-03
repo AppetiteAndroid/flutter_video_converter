@@ -177,9 +177,10 @@ import AVFoundation
           if let progressRange = progressRange {
             // Scale progress within the given range
             let scaledProgress = progressRange.start + (exportSession.progress * (progressRange.end - progressRange.start))
-            self?.progressEventSink?(scaledProgress)
+            // Send progress with path
+            self?.sendProgressWithPath(path: videoPath, progress: scaledProgress)
           } else {
-            self?.progressEventSink?(exportSession.progress)
+            self?.sendProgressWithPath(path: videoPath, progress: exportSession.progress)
           }
         }
       } else if exportSession.status != .waiting {
@@ -194,9 +195,9 @@ import AVFoundation
       // Send final progress update
       DispatchQueue.main.async { [weak self] in
         if let progressRange = progressRange {
-          self?.progressEventSink?(progressRange.end)
+          self?.sendProgressWithPath(path: videoPath, progress: progressRange.end)
         } else if exportSession.status == .completed {
-          self?.progressEventSink?(1.0)
+          self?.sendProgressWithPath(path: videoPath, progress: 1.0)
         }
       }
       
@@ -211,6 +212,15 @@ import AVFoundation
         completion(nil, NSError(domain: "VideoConverter", code: -3, userInfo: [NSLocalizedDescriptionKey: "Unknown error"]))
       }
     }
+  }
+  
+  // Helper method to send progress with file path
+  private func sendProgressWithPath(path: String, progress: Double) {
+    let progressData: [String: Any] = [
+      "path": path,
+      "progress": progress
+    ]
+    progressEventSink?(progressData)
   }
   
   private func convertVideoToMP4(
