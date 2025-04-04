@@ -75,6 +75,12 @@ class FlutterVideoConverter {
   /// Keep track of the active subscription
   static StreamSubscription? _activeProgressSubscription;
 
+  /// Track the last progress value to avoid duplicate updates
+  static double _lastProgress = -1.0;
+
+  /// Track the last update time for debouncing
+  static DateTime? _lastUpdateTime;
+
   /// Converts a video file to specified format with selected quality.
   ///
   /// The [videoFile] is the source video file to convert.
@@ -94,18 +100,65 @@ class FlutterVideoConverter {
       await _activeProgressSubscription?.cancel();
       _activeProgressSubscription = null;
 
+      // Reset progress tracking variables
+      _lastProgress = -1.0;
+      _lastUpdateTime = null;
+
       // Set up progress listener if callback is provided
       if (onProgress != null) {
         _activeProgressSubscription = _progressChannel.receiveBroadcastStream().listen((dynamic event) {
+          final now = DateTime.now();
+
+          // Process the event data
+          String path = videoFile.path;
+          double progress = 0.0;
+
           if (event is Map) {
             // Extract path and progress from the map
-            final String path = event['path'] as String? ?? videoFile.path;
-            final double progress = event['progress'] as double? ?? 0.0;
-            onProgress(path, progress);
+            path = event['path'] as String? ?? videoFile.path;
+            progress = event['progress'] as double? ?? 0.0;
+            debugPrint('📣 MAP EVENT - Path: $path, Progress: ${(progress * 100).toStringAsFixed(0)}%');
           } else if (event is double) {
             // Backward compatibility for platforms that only send progress
-            onProgress(videoFile.path, event);
+            progress = event;
+            debugPrint('📣 DOUBLE EVENT - Progress: ${(progress * 100).toStringAsFixed(0)}%');
+          } else {
+            debugPrint('📣 UNKNOWN EVENT TYPE: ${event.runtimeType}');
           }
+
+          // Filter out duplicate updates (same progress value)
+          if (progress == _lastProgress) {
+            debugPrint('⛔ FILTERED: Duplicate progress value: ${(progress * 100).toStringAsFixed(0)}%');
+            return;
+          }
+
+          // Filter out very small changes in progress (less than 1% difference)
+          // except for start (0%) and completion (100%)
+          if (_lastProgress >= 0 && progress != 0.0 && progress != 1.0) {
+            final lastPercent = (_lastProgress * 100).round();
+            final currentPercent = (progress * 100).round();
+            if (lastPercent == currentPercent) {
+              debugPrint('⛔ FILTERED: Trivial progress change: ${_lastProgress.toStringAsFixed(4)} → ${progress.toStringAsFixed(4)}');
+              return;
+            }
+          }
+
+          // Implement debounce - ignore updates that come too quickly
+          if (_lastUpdateTime != null) {
+            final difference = now.difference(_lastUpdateTime!).inMilliseconds;
+            // Skip updates that come within 100ms of each other, except for 0% and 100%
+            if (difference < 100 && progress != 0.0 && progress != 1.0) {
+              debugPrint('⛔ DEBOUNCED: Update too quick (${difference}ms), progress: ${(progress * 100).toStringAsFixed(0)}%');
+              return;
+            }
+          }
+
+          // Update tracking variables
+          _lastProgress = progress;
+          _lastUpdateTime = now;
+
+          // Invoke callback
+          onProgress(path, progress);
         });
       }
 
