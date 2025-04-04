@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -71,6 +72,9 @@ class FlutterVideoConverter {
   /// The event channel used to receive progress updates from native code.
   static const EventChannel _progressChannel = EventChannel('com.example.flutter_video_converter/converter/progress');
 
+  /// Keep track of the active subscription
+  static StreamSubscription? _activeProgressSubscription;
+
   /// Converts a video file to specified format with selected quality.
   ///
   /// The [videoFile] is the source video file to convert.
@@ -86,9 +90,13 @@ class FlutterVideoConverter {
     Function(String, double)? onProgress,
   }) async {
     try {
+      // Cancel any existing subscription
+      await _activeProgressSubscription?.cancel();
+      _activeProgressSubscription = null;
+
       // Set up progress listener if callback is provided
       if (onProgress != null) {
-        _progressChannel.receiveBroadcastStream().listen((dynamic event) {
+        _activeProgressSubscription = _progressChannel.receiveBroadcastStream().listen((dynamic event) {
           if (event is Map) {
             // Extract path and progress from the map
             final String path = event['path'] as String? ?? videoFile.path;
@@ -109,8 +117,17 @@ class FlutterVideoConverter {
           'format': format.value,
         },
       );
+
+      // Conversion is complete, cancel subscription
+      await _activeProgressSubscription?.cancel();
+      _activeProgressSubscription = null;
+
       return outputPath;
     } on PlatformException catch (e) {
+      // Clean up subscription on error
+      await _activeProgressSubscription?.cancel();
+      _activeProgressSubscription = null;
+
       debugPrint('Failed to convert video: ${e.message}');
       return null;
     }
