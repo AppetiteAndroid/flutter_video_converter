@@ -147,7 +147,6 @@ import AVFoundation
     
     // Determine quality preset and compression settings
     let preset: String
-    var compressionSettings: [String: Any]? = nil
     
     // Get asset to determine video dimensions for appropriate bitrate
     let asset = AVAsset(url: sourceURL)
@@ -171,10 +170,8 @@ import AVFoundation
     
     // Set video compression settings if format supports it
     if format == "mp4" || format == "mov" {
-      compressionSettings = [
-        AVVideoAverageBitRateKey: videoBitrate,
-        AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel
-      ]
+      // We'll use preset instead of trying to configure custom settings
+      // as AVAssetExportSession doesn't support direct videoSettings configuration
     }
     
     // Determine file type
@@ -226,43 +223,14 @@ import AVFoundation
       exportSession.outputFileType = fileType
       exportSession.shouldOptimizeForNetworkUse = true
       
-      // Apply custom compression settings when available
-      if let compressionSettings = compressionSettings {
-        // Only supported on certain iOS versions
-        if #available(iOS 11.0, *) {
-          // Create video settings dictionary
-          var videoSettings: [String: Any] = [AVVideoCodecKey: AVVideoCodecType.h264]
-          
-          // Add compression settings
-          videoSettings[AVVideoCompressionPropertiesKey] = compressionSettings
-          
-          // Use different approach based on format
-          if fileType == .mp4 || fileType == .mov {
-            if let videoTrack = asset.tracks(withMediaType: .video).first {
-              // Get natural dimensions
-              let naturalSize = videoTrack.naturalSize
-              
-              // Set size settings
-              videoSettings[AVVideoWidthKey] = naturalSize.width
-              videoSettings[AVVideoHeightKey] = naturalSize.height
-              
-              // Try to set video settings - this may fail silently for some export presets
-              do {
-                try exportSession.setValue(videoSettings, forKey: "videoSettings")
-              } catch {
-                print("Warning: Unable to set custom video settings: \(error.localizedDescription)")
-                // Continue with default preset settings
-              }
-            }
-          }
-        }
-      }
-
-      // Send initial progress
-      sendProgress(path: videoPath, progress: 0.0)
+      // For fine-tuning quality, we have to rely on the preset
+      // AVAssetExportSession doesn't support direct video settings modifications
       
-      // Get video duration to estimate progress
+      // Get video duration for progress tracking
       let durationInSeconds = CMTimeGetSeconds(asset.duration)
+      
+      // Set up initial progress
+      sendProgress(path: videoPath, progress: 0.0)
       
       // Calculate estimated total time based on video duration and quality
       // Higher quality takes longer to process

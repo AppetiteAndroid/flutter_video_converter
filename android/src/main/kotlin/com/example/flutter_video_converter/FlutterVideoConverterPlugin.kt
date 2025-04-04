@@ -20,8 +20,6 @@ import java.nio.ByteBuffer
 import java.util.*
 import kotlin.concurrent.thread
 import android.util.Log
-import android.media.MediaCodecInfo
-import android.media.MediaCodecList
 import android.media.MediaMetadataRetriever
 
 /** FlutterVideoConverterPlugin */
@@ -179,12 +177,12 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
   }
   
   private fun convertVideo(videoPath: String, quality: String, format: String): String {
-    // Determine quality setting - now we'll use explicit bitrates instead of multipliers
-    val qualityLevel = when (quality) {
-      "high" -> VideoQuality.HIGH
-      "medium" -> VideoQuality.MEDIUM
-      "low" -> VideoQuality.LOW
-      else -> VideoQuality.MEDIUM // Default to medium
+    // Determine quality setting
+    val compressionRate = when (quality) {
+      "high" -> 0.9  // High quality - 90% of original bitrate
+      "medium" -> 0.6  // Medium quality - 60% of original bitrate
+      "low" -> 0.3  // Low quality - 30% of original bitrate
+      else -> 0.6 // Default to medium
     }
     
     // Determine output format
@@ -198,8 +196,8 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     val fileExtension = when (format) {
       "mp4" -> "mp4"
       "webm" -> "webm"
-      "mov" -> "mov"
-      "avi" -> "avi"
+      "mov" -> "mp4"  // Use mp4 for mov as Android doesn't directly support mov
+      "avi" -> "mp4"  // Use mp4 for avi as Android doesn't directly support avi
       else -> "mp4"
     }
     
@@ -228,158 +226,29 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
       // Send initial progress
       sendProgress(videoPath, 0.0)
       
-      // Use a simpler approach that will work reliably
-      val compressionRate = when (qualityLevel) {
-        VideoQuality.HIGH -> 0.9  // High quality - 90% of original
-        VideoQuality.MEDIUM -> 0.6  // Medium quality - 60% of original
-        VideoQuality.LOW -> 0.3  // Low quality - 30% of original
-      }
-      
-      // Extract and log video metadata to help with debugging
+      // Get video metadata
       val retriever = MediaMetadataRetriever()
       retriever.setDataSource(videoPath)
-      val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
-      val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
-      val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-      Log.d("VideoConverter", "Video metadata: ${width}x${height}, duration: ${duration}ms, quality: $quality")
-      
-      // Create an extractor to read the source file
-      val extractor = MediaExtractor()
-      extractor.setDataSource(videoPath)
-      
-      // Create a muxer to write to the destination file
-      val muxer = MediaMuxer(outputPath, outputFormat)
-      
-      // Track the indexes that we process
-      val trackIndexMap = HashMap<Int, Int>()
-      
-      // Find all tracks and add them to the muxer
-      for (i in 0 until extractor.trackCount) {
-        val format = extractor.getTrackFormat(i)
-        val mimeType = format.getString(MediaFormat.KEY_MIME)
-        
-        Log.d("VideoConverter", "Track $i mime type: $mimeType")
-        
-        // Modify the bitrate for video tracks
-        if (mimeType?.startsWith("video/") == true) {
-          // Get original bitrate or estimate one based on resolution and frame rate
-          var originalBitrate = if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
-            format.getInteger(MediaFormat.KEY_BIT_RATE)
-          } else {
-            // Estimate bitrate if not present (resolution * framerate * 0.07 as a rough estimate)
-            val frameRate = if (format.containsKey(MediaFormat.KEY_FRAME_RATE)) {
-              format.getInteger(MediaFormat.KEY_FRAME_RATE)
-            } else {
-              30 // Assume 30fps if not specified
-            }
-            val videoWidth = format.getInteger(MediaFormat.KEY_WIDTH)
-            val videoHeight = format.getInteger(MediaFormat.KEY_HEIGHT)
-            (videoWidth * videoHeight * frameRate * 0.07).toInt()
-          }
-          
-          // Make sure we have a reasonable minimum bitrate
-          if (originalBitrate < 500000) {
-            originalBitrate = 500000 // 500 Kbps minimum
-          }
-          
-          // Apply compression based on quality
-          val newBitrate = (originalBitrate * compressionRate).toInt()
-          format.setInteger(MediaFormat.KEY_BIT_RATE, newBitrate)
-          
-          // Set i-frame interval based on quality
-          val iFrameInterval = when (qualityLevel) {
-            VideoQuality.HIGH -> 1  // Keyframe every 1 second
-            VideoQuality.MEDIUM -> 2  // Keyframe every 2 seconds
-            VideoQuality.LOW -> 5  // Keyframe every 5 seconds
-          }
-          format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameInterval)
-          
-          Log.d("VideoConverter", "Setting video bitrate: $newBitrate (${newBitrate/1000} Kbps)")
-        } else if (mimeType?.startsWith("audio/") == true) {
-          // Also adjust audio bitrate for lower quality settings
-          if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
-            val audioBitrate = when (qualityLevel) {
-              VideoQuality.HIGH -> format.getInteger(MediaFormat.KEY_BIT_RATE) // Keep original for high
-              VideoQuality.MEDIUM -> 128000  // 128 Kbps for medium
-              VideoQuality.LOW -> 96000  // 96 Kbps for low
-            }
-            format.setInteger(MediaFormat.KEY_BIT_RATE, audioBitrate)
-            Log.d("VideoConverter", "Setting audio bitrate: $audioBitrate (${audioBitrate/1000} Kbps)")
-          }
-        }
-        
-        // Add track to muxer
-        val destTrackIndex = muxer.addTrack(format)
-        trackIndexMap[i] = destTrackIndex
-      }
-      
-      // Start the muxer now that all tracks are added
-      muxer.start()
-      
-      // Buffer for reading from extractor
-      val MAX_BUFFER_SIZE = 1024 * 1024 // 1MB
-      val buffer = ByteBuffer.allocate(MAX_BUFFER_SIZE)
-      val bufferInfo = MediaCodec.BufferInfo()
-      
-      // Track our progress
-      val startTime = System.currentTimeMillis()
-      val estimatedDurationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 10000
-      var lastProgressUpdate = 0.0
-      
-      // Process each track
-      for (trackIndex in trackIndexMap.keys) {
-        extractor.selectTrack(trackIndex)
-        
-        while (true) {
-          // Update progress periodically
-          val currentTime = System.currentTimeMillis()
-          val elapsedTimeMs = currentTime - startTime
-          val progressPercent = Math.min(0.99, elapsedTimeMs.toDouble() / (estimatedDurationMs * 1.5))
-          
-          if (progressPercent - lastProgressUpdate >= 0.05) { // Update progress every 5%
-            sendProgress(videoPath, progressPercent)
-            lastProgressUpdate = progressPercent
-          }
-          
-          // Read a sample from the extractor
-          val sampleSize = extractor.readSampleData(buffer, 0)
-          if (sampleSize < 0) {
-            break // End of track
-          }
-          
-          // Set up the buffer info
-          bufferInfo.offset = 0
-          bufferInfo.size = sampleSize
-          bufferInfo.presentationTimeUs = extractor.sampleTime
-          bufferInfo.flags = extractor.sampleFlags
-          
-          // Write the sample to the muxer
-          muxer.writeSampleData(trackIndexMap[trackIndex]!!, buffer, bufferInfo)
-          
-          // Advance to the next sample
-          extractor.advance()
-        }
-        
-        // Deselect this track before moving to the next one
-        extractor.unselectTrack(trackIndex)
-      }
-      
-      // Clean up
+      val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 10000
       retriever.release()
-      muxer.stop()
-      muxer.release()
-      extractor.release()
+      
+      convertVideoImpl(
+        inputPath = videoPath,
+        outputPath = outputPath,
+        outputFormat = outputFormat,
+        compressionRate = compressionRate
+      )
       
       // Send final progress
       sendProgress(videoPath, 1.0)
       
       // Log size difference
       val sourceFile = File(videoPath)
-      val sourceSize = sourceFile.length()
       val outputSize = outputFile.length()
-      val ratioPercent = (outputSize.toDouble() / sourceSize.toDouble() * 100).toInt()
+      val sourceSize = sourceFile.length()
+      val ratio = (outputSize.toDouble() / sourceSize.toDouble() * 100).toInt()
       
-      Log.d("VideoConverter", "Conversion complete - Original: ${sourceSize/1024}KB, Converted: ${outputSize/1024}KB, Ratio: $ratioPercent%")
+      Log.d("VideoConverter", "Conversion complete - Original: ${sourceSize / 1024}KB, Converted: ${outputSize / 1024}KB, Ratio: $ratio%")
       
       return outputPath
     } catch (e: Exception) {
@@ -389,16 +258,164 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     }
   }
   
-  // Enum class for quality levels
-  enum class VideoQuality {
-    HIGH, MEDIUM, LOW
+  @Throws(IOException::class)
+  private fun convertVideoImpl(
+    inputPath: String,
+    outputPath: String,
+    outputFormat: Int,
+    compressionRate: Double
+  ) {
+    // Send initial progress
+    sendProgress(inputPath, 0.0)
+    
+    try {
+      // Create extractor to read input
+      val extractor = MediaExtractor()
+      extractor.setDataSource(inputPath)
+      
+      // Create muxer for output
+      val muxer = MediaMuxer(outputPath, outputFormat)
+      
+      // Map the track indices
+      val trackCount = extractor.trackCount
+      val indexMap = HashMap<Int, Int>(trackCount)
+      
+      // Get total duration if available
+      var totalDuration: Long = 0
+      
+      // First pass: setup tracks and get duration information
+      for (i in 0 until trackCount) {
+        extractor.selectTrack(i)
+        val format = extractor.getTrackFormat(i)
+        val mime = format.getString(MediaFormat.KEY_MIME)
+        
+        // Get track duration if available
+        if (format.containsKey(MediaFormat.KEY_DURATION)) {
+          val trackDuration = format.getLong(MediaFormat.KEY_DURATION)
+          totalDuration = Math.max(totalDuration, trackDuration)
+        }
+        
+        if (mime?.startsWith("video/") == true) {
+          // Modify video bitrate for different quality
+          if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
+            val originalBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE)
+            val newBitrate = (originalBitrate * compressionRate).toInt()
+            format.setInteger(MediaFormat.KEY_BIT_RATE, newBitrate)
+          }
+          
+          // Set keyframe interval based on quality
+          if (compressionRate < 0.5) {
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 5) // Key frame every 5 seconds for low quality
+          } else {
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2) // Key frame every 2 seconds for higher quality
+          }
+        } else if (mime?.startsWith("audio/") == true) {
+          // For audio tracks, apply more gentle compression
+          if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
+            val originalBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE)
+            // Audio compression is less aggressive
+            val audioCompressionRate = compressionRate + ((1.0 - compressionRate) / 2)
+            val newBitrate = (originalBitrate * audioCompressionRate).toInt()
+            format.setInteger(MediaFormat.KEY_BIT_RATE, newBitrate)
+          }
+        }
+        
+        // Add track to muxer
+        val trackIndex = muxer.addTrack(format)
+        indexMap[i] = trackIndex
+        
+        extractor.unselectTrack(i)
+      }
+      
+      // Use a timer for progress tracking instead of using presentationTimeUs
+      val conversionStartTime = System.currentTimeMillis()
+      var isRunning = true
+      
+      // Start progress monitoring in a separate thread
+      val progressThread = Thread {
+        try {
+          // Estimate total conversion time - roughly 10% of video duration or minimum 2 seconds
+          val estimatedDurationMs = if (totalDuration > 0) {
+            Math.max(totalDuration / 10000, 2000)
+          } else {
+            10000 // Default to 10 seconds if duration unknown
+          }
+          
+          var lastProgress = 0.0
+          while (isRunning) {
+            val elapsedTime = System.currentTimeMillis() - conversionStartTime
+            // Calculate progress as a percentage of elapsed time vs estimated duration
+            val progress = Math.min(0.99, elapsedTime.toDouble() / estimatedDurationMs.toDouble())
+            
+            // Only report progress if it has increased by at least 1%
+            if (progress - lastProgress >= 0.01 || progress >= 0.99) {
+              sendProgress(inputPath, progress)
+              lastProgress = progress
+            }
+            
+            Thread.sleep(100) // Update every 100ms
+          }
+        } catch (e: Exception) {
+          // Ignore exceptions in progress reporting thread
+        }
+      }
+      
+      // Start the progress thread
+      progressThread.start()
+      
+      // Start muxing
+      muxer.start()
+      
+      // Prepare buffer for reading
+      val maxBufferSize = 1024 * 1024 // 1MB buffer
+      val buffer = ByteBuffer.allocate(maxBufferSize)
+      val bufferInfo = MediaCodec.BufferInfo()
+      
+      // Process tracks without sending progress updates
+      for (i in 0 until trackCount) {
+        if (!indexMap.containsKey(i)) continue
+        
+        extractor.selectTrack(i)
+        
+        while (true) {
+          val sampleSize = extractor.readSampleData(buffer, 0)
+          if (sampleSize < 0) break
+          
+          bufferInfo.offset = 0
+          bufferInfo.size = sampleSize
+          bufferInfo.presentationTimeUs = extractor.sampleTime
+          bufferInfo.flags = extractor.sampleFlags
+          
+          muxer.writeSampleData(indexMap[i]!!, buffer, bufferInfo)
+          
+          extractor.advance()
+        }
+        
+        extractor.unselectTrack(i)
+      }
+      
+      // Stop the progress thread
+      isRunning = false
+      progressThread.join(500) // Wait for progress thread to finish
+      
+      // Release resources
+      muxer.stop()
+      muxer.release()
+      extractor.release()
+      
+      // Send final 100% progress update
+      sendProgress(inputPath, 1.0)
+      
+    } catch (e: Exception) {
+      sendProgress(inputPath, 1.0) // Make sure to send final progress even on error
+      throw e
+    }
   }
   
   private fun convertMultipleVideosToMp4(videoPaths: List<String>): List<String> {
     val outputPaths = mutableListOf<String>()
-    val totalVideos = videoPaths.size
     
-    for ((index, videoPath) in videoPaths.withIndex()) {
+    for (videoPath in videoPaths) {
       try {
         // Convert the individual video
         val outputPath = convertVideo(videoPath, "medium", "mp4")
@@ -410,11 +427,11 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     }
     
     // Ensure 100% progress is sent at the end
-    sendProgress(videoPaths[0], 1.0)
+    if (videoPaths.isNotEmpty()) {
+      sendProgress(videoPaths[0], 1.0)
+    }
     return outputPaths
   }
-  
-  // Add methods for cache management
   
   /**
    * Deletes all files in the conversion cache directory.
