@@ -32,6 +32,20 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
   private var progressSink: EventChannel.EventSink? = null
   private val mainHandler = Handler(Looper.getMainLooper())
 
+  // Track last time we sent a progress update to avoid sending too many
+  private var lastProgressUpdateTime = 0L
+
+  // Synchronized version of updateProgressWithPath with rate limiting
+  @Synchronized
+  private fun updateProgressWithPathSync(inputPath: String, progress: Double) {
+    val now = System.currentTimeMillis()
+    // Only send progress updates at most once every 200ms
+    if (now - lastProgressUpdateTime >= 200 || progress == 0.0 || progress == 1.0) {
+      lastProgressUpdateTime = now
+      updateProgressWithPath(inputPath, progress)
+    }
+  }
+
   override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
     context = flutterPluginBinding.applicationContext
     channel = MethodChannel(flutterPluginBinding.binaryMessenger, "com.example.flutter_video_converter/converter")
@@ -215,6 +229,11 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
         startProgress = 0.0,
         endProgress = 1.0
       )
+      
+      // Add a small delay to ensure all progress updates are sent
+      // before returning the result
+      Thread.sleep(200)
+      
       return outputPath
     } catch (e: Exception) {
       throw IOException("Failed to convert video: ${e.message}", e)
@@ -239,6 +258,11 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     // Use the MediaMuxer approach
     try {
       convertWithMuxer(videoPath, outputPath, startProgress, endProgress)
+      
+      // Add a small delay to ensure all progress updates are sent
+      // before returning the result
+      Thread.sleep(200)
+      
       return outputPath
     } catch (e: Exception) {
       throw IOException("Failed to convert video: ${e.message}", e)
@@ -358,7 +382,7 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
         if (totalDuration > 0) {
           val videoProgress = bufferInfo.presentationTimeUs.toDouble() / totalDuration.toDouble()
           val scaledProgress = startProgress + (videoProgress * progressRange)
-          updateProgressWithPath(inputPath, scaledProgress)
+          updateProgressWithPathSync(inputPath, scaledProgress)
         }
         
         extractor.advance()
@@ -368,7 +392,7 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     }
     
     // Update progress to the end of this video's range
-    updateProgressWithPath(inputPath, endProgress)
+    updateProgressWithPathSync(inputPath, endProgress)
     
     // Release resources
     muxer.stop()

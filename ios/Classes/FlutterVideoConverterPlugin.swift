@@ -171,7 +171,7 @@ import AVFoundation
     exportSession.shouldOptimizeForNetworkUse = true
     
     // Setup progress monitoring
-    let progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+    let progressTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] timer in
       if exportSession.status == .exporting {
         DispatchQueue.main.async {
           if let progressRange = progressRange {
@@ -203,7 +203,11 @@ import AVFoundation
       
       switch exportSession.status {
       case .completed:
-        completion(outputURL.path, nil)
+        // Wait a moment before returning the result to let the progress update
+        // This should prevent any overlap between finishing one conversion and starting another
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+          completion(outputURL.path, nil)
+        }
       case .failed:
         completion(nil, exportSession.error)
       case .cancelled:
