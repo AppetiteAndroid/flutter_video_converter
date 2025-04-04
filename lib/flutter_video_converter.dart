@@ -75,11 +75,8 @@ class FlutterVideoConverter {
   /// Keep track of the active subscription
   static StreamSubscription? _activeProgressSubscription;
 
-  /// Track the last progress value to avoid duplicate updates
-  static double _lastProgress = -1.0;
-
-  /// Track the last update time for debouncing
-  static DateTime? _lastUpdateTime;
+  /// Flag to indicate if a conversion is in progress
+  static bool _conversionInProgress = false;
 
   /// Converts a video file to specified format with selected quality.
   ///
@@ -96,18 +93,16 @@ class FlutterVideoConverter {
     Function(String, double)? onProgress,
   }) async {
     try {
-      // Cancel any existing subscription
+      // Ensure any previous conversion is cleaned up
       await _activeProgressSubscription?.cancel();
       _activeProgressSubscription = null;
-
-      // Reset progress tracking variables
-      _lastProgress = -1.0;
-      _lastUpdateTime = null;
+      _conversionInProgress = true;
 
       // Set up progress listener if callback is provided
       if (onProgress != null) {
         _activeProgressSubscription = _progressChannel.receiveBroadcastStream().listen((dynamic event) {
-          final now = DateTime.now();
+          // Skip events if we're not actively converting
+          if (!_conversionInProgress) return;
 
           // Process the event data
           String path = videoFile.path;
@@ -117,45 +112,18 @@ class FlutterVideoConverter {
             // Extract path and progress from the map
             path = event['path'] as String? ?? videoFile.path;
             progress = event['progress'] as double? ?? 0.0;
-            debugPrint('📣 MAP EVENT - Path: $path, Progress: ${(progress * 100).toStringAsFixed(0)}%');
+            debugPrint('Progress update: $path - ${(progress * 100).toStringAsFixed(0)}%');
           } else if (event is double) {
             // Backward compatibility for platforms that only send progress
             progress = event;
-            debugPrint('📣 DOUBLE EVENT - Progress: ${(progress * 100).toStringAsFixed(0)}%');
+            debugPrint('Progress update: ${(progress * 100).toStringAsFixed(0)}%');
           } else {
-            debugPrint('📣 UNKNOWN EVENT TYPE: ${event.runtimeType}');
+            return; // Skip unknown event types
           }
 
-          // Filter out duplicate updates (same progress value)
-          if (progress == _lastProgress) {
-            debugPrint('⛔ FILTERED: Duplicate progress value: ${(progress * 100).toStringAsFixed(0)}%');
-            return;
-          }
-
-          // Filter out very small changes in progress (less than 1% difference)
-          // except for start (0%) and completion (100%)
-          if (_lastProgress >= 0 && progress != 0.0 && progress != 1.0) {
-            final lastPercent = (_lastProgress * 100).round();
-            final currentPercent = (progress * 100).round();
-            if (lastPercent == currentPercent) {
-              debugPrint('⛔ FILTERED: Trivial progress change: ${_lastProgress.toStringAsFixed(4)} → ${progress.toStringAsFixed(4)}');
-              return;
-            }
-          }
-
-          // Implement debounce - ignore updates that come too quickly
-          if (_lastUpdateTime != null) {
-            final difference = now.difference(_lastUpdateTime!).inMilliseconds;
-            // Skip updates that come within 100ms of each other, except for 0% and 100%
-            if (difference < 100 && progress != 0.0 && progress != 1.0) {
-              debugPrint('⛔ DEBOUNCED: Update too quick (${difference}ms), progress: ${(progress * 100).toStringAsFixed(0)}%');
-              return;
-            }
-          }
-
-          // Update tracking variables
-          _lastProgress = progress;
-          _lastUpdateTime = now;
+          // Validate progress is in valid range
+          if (progress < 0.0) progress = 0.0;
+          if (progress > 1.0) progress = 1.0;
 
           // Invoke callback
           onProgress(path, progress);
@@ -171,13 +139,17 @@ class FlutterVideoConverter {
         },
       );
 
-      // Conversion is complete, cancel subscription
+      // Mark conversion as complete
+      _conversionInProgress = false;
+
+      // Clean up subscription
       await _activeProgressSubscription?.cancel();
       _activeProgressSubscription = null;
 
       return outputPath;
     } on PlatformException catch (e) {
-      // Clean up subscription on error
+      // Clean up on error
+      _conversionInProgress = false;
       await _activeProgressSubscription?.cancel();
       _activeProgressSubscription = null;
 

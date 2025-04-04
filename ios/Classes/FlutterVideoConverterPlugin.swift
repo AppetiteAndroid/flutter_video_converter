@@ -178,17 +178,48 @@ import AVFoundation
     exportSession.outputURL = outputURL
     exportSession.outputFileType = fileType
     exportSession.shouldOptimizeForNetworkUse = true
-
+    
     // Send initial progress
     sendProgress(path: videoPath, progress: 0.0)
     
-    // Setup progress monitoring
-    let progressTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] timer in
-      if exportSession.status == .exporting {
+    // Get video duration to estimate progress
+    let durationInSeconds = CMTimeGetSeconds(asset.duration)
+    
+    // Calculate estimated total time based on video duration and quality
+    // Higher quality takes longer to process
+    let estimatedFactor: Double
+    switch quality {
+    case "high":
+      estimatedFactor = 0.25 // 25% of video duration
+    case "medium":
+      estimatedFactor = 0.15 // 15% of video duration
+    case "low":
+      estimatedFactor = 0.1 // 10% of video duration
+    default:
+      estimatedFactor = 0.15
+    }
+    
+    let estimatedDurationSeconds = max(durationInSeconds * estimatedFactor, 2.0) // At least 2 seconds
+    
+    // Create our own progress timer to avoid unreliable progress from AVAssetExportSession
+    let startTime = Date()
+    var lastReportedProgress = 0.0
+    
+    let progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+      // Calculate progress based on elapsed time compared to estimated duration
+      let elapsedSeconds = Date().timeIntervalSince(startTime)
+      let progress = min(0.99, elapsedSeconds / estimatedDurationSeconds)
+      
+      // Only send updates if progress increased by at least 1%
+      if progress - lastReportedProgress >= 0.01 {
+        lastReportedProgress = progress
         DispatchQueue.main.async {
-          self?.sendProgress(path: videoPath, progress: exportSession.progress)
+          self?.sendProgress(path: videoPath, progress: progress)
         }
-      } else if exportSession.status != .waiting {
+      }
+      
+      // Check export session status
+      if exportSession.status != .exporting && exportSession.status != .waiting {
         timer.invalidate()
       }
     }
@@ -206,16 +237,18 @@ import AVFoundation
       
       switch exportSession.status {
       case .completed:
-        // Wait a moment before returning the result to let the progress update
-        // This should prevent any overlap between finishing one conversion and starting another
+        // Wait a moment before returning the result
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
           completion(outputURL.path, nil)
         }
       case .failed:
+        self.sendProgress(path: videoPath, progress: 1.0) // Ensure final progress even on error
         completion(nil, exportSession.error)
       case .cancelled:
+        self.sendProgress(path: videoPath, progress: 1.0) // Ensure final progress even on error
         completion(nil, NSError(domain: "VideoConverter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Export cancelled"]))
       default:
+        self.sendProgress(path: videoPath, progress: 1.0) // Ensure final progress even on error
         completion(nil, NSError(domain: "VideoConverter", code: -3, userInfo: [NSLocalizedDescriptionKey: "Unknown error"]))
       }
     }
