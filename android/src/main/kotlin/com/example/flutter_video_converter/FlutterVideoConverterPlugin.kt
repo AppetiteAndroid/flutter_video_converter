@@ -35,17 +35,6 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
   // Track last time we sent a progress update to avoid sending too many
   private var lastProgressUpdateTime = 0L
 
-  // Synchronized version of updateProgressWithPath with rate limiting
-  @Synchronized
-  private fun updateProgressWithPathSync(inputPath: String, progress: Double) {
-    val now = System.currentTimeMillis()
-    // Only send progress updates at most once every 200ms
-    if (now - lastProgressUpdateTime >= 200 || progress == 0.0 || progress == 1.0) {
-      lastProgressUpdateTime = now
-      updateProgressWithPath(inputPath, progress)
-    }
-  }
-
   override fun onAttachedToEngine(@NonNull flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
     context = flutterPluginBinding.applicationContext
     channel = MethodChannel(flutterPluginBinding.binaryMessenger, "com.example.flutter_video_converter/converter")
@@ -65,27 +54,6 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
 
   override fun onMethodCall(@NonNull call: MethodCall, @NonNull result: Result) {
     when (call.method) {
-      "convertToMp4" -> {
-        val videoPath = call.argument<String>("videoPath")
-        if (videoPath == null) {
-          result.error("INVALID_ARGS", "Video path is required", null)
-          return
-        }
-        
-        // Run conversion in a background thread
-        thread {
-          try {
-            val outputPath = convertVideoToMp4(videoPath)
-            mainHandler.post {
-              result.success(outputPath)
-            }
-          } catch (e: Exception) {
-            mainHandler.post {
-              result.error("CONVERSION_ERROR", e.message, null)
-            }
-          }
-        }
-      }
       "convertVideo" -> {
         val videoPath = call.argument<String>("videoPath")
         val quality = call.argument<String>("quality") ?: "medium"
@@ -100,6 +68,27 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
         thread {
           try {
             val outputPath = convertVideo(videoPath, quality, format)
+            mainHandler.post {
+              result.success(outputPath)
+            }
+          } catch (e: Exception) {
+            mainHandler.post {
+              result.error("CONVERSION_ERROR", e.message, null)
+            }
+          }
+        }
+      }
+      "convertToMp4" -> {
+        val videoPath = call.argument<String>("videoPath")
+        if (videoPath == null) {
+          result.error("INVALID_ARGS", "Video path is required", null)
+          return
+        }
+        
+        // Backwards compatibility - uses mp4 format with medium quality
+        thread {
+          try {
+            val outputPath = convertVideo(videoPath, "medium", "mp4")
             mainHandler.post {
               result.success(outputPath)
             }
@@ -141,66 +130,39 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     channel.setMethodCallHandler(null)
   }
   
-  private fun updateProgress(progress: Double) {
-    mainHandler.post {
-      progressSink?.success(progress)
-    }
-  }
-  
-  private fun updateProgressWithPath(inputPath: String, progress: Double) {
-    mainHandler.post {
-      val progressData = HashMap<String, Any>()
-      progressData["path"] = inputPath
-      progressData["progress"] = progress
-      progressSink?.success(progressData)
-    }
-  }
-  
-  private fun convertMultipleVideosToMp4(videoPaths: List<String>): List<String> {
-    val outputPaths = mutableListOf<String>()
-    val totalVideos = videoPaths.size
-    
-    for ((index, videoPath) in videoPaths.withIndex()) {
-      try {
-        // Convert the individual video
-        val outputPath = convertVideoToMp4WithScaledProgress(
-          videoPath,
-          startProgress = index.toDouble() / totalVideos,
-          endProgress = (index + 1.0) / totalVideos
-        )
-        outputPaths.add(outputPath)
-      } catch (e: Exception) {
-        // Log the error but continue with other videos
-        e.printStackTrace()
+  // Send progress with input path
+  private fun sendProgress(inputPath: String, progress: Double) {
+    val now = System.currentTimeMillis()
+    // Rate limit progress updates to avoid flooding the event channel
+    if (now - lastProgressUpdateTime >= 200 || progress == 0.0 || progress == 1.0) {
+      lastProgressUpdateTime = now
+      
+      mainHandler.post {
+        val progressData = HashMap<String, Any>()
+        progressData["path"] = inputPath
+        progressData["progress"] = progress
+        progressSink?.success(progressData)
       }
     }
-    
-    // Ensure 100% progress is sent at the end
-    updateProgress(1.0)
-    return outputPaths
-  }
-  
-  private fun convertVideoToMp4(videoPath: String): String {
-    return convertVideoToMp4WithScaledProgress(videoPath, 0.0, 1.0)
   }
   
   private fun convertVideo(videoPath: String, quality: String, format: String): String {
-    // Определение качества конвертации
+    // Determine quality setting
     val compressionRate = when (quality) {
-      "high" -> 0.9  // высокое качество - 90% оригинального битрейта
-      "medium" -> 0.6  // среднее качество - 60% оригинального битрейта
-      "low" -> 0.3  // низкое качество - 30% оригинального битрейта
-      else -> 0.6 // по умолчанию среднее
+      "high" -> 0.9  // High quality - 90% of original bitrate
+      "medium" -> 0.6  // Medium quality - 60% of original bitrate
+      "low" -> 0.3  // Low quality - 30% of original bitrate
+      else -> 0.6 // Default to medium
     }
     
-    // Определение формата вывода
+    // Determine output format
     val outputFormat = when (format) {
       "mp4" -> MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
       "webm" -> MediaMuxer.OutputFormat.MUXER_OUTPUT_WEBM
-      else -> MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4 // mp4 по умолчанию, если формат не поддерживается
+      else -> MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4 // Default to mp4 if format not supported
     }
     
-    // Определение расширения файла
+    // Determine file extension
     val fileExtension = when (format) {
       "mp4" -> "mp4"
       "webm" -> "webm"
@@ -209,7 +171,7 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
       else -> "mp4"
     }
     
-    // Создание имени выходного файла
+    // Create output file
     val outputFileName = "converted_${Date().time}.$fileExtension"
     val outputDir = File(context.externalCacheDir, "converted_videos").apply {
       if (!exists()) {
@@ -219,49 +181,22 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     val outputFile = File(outputDir, outputFileName)
     val outputPath = outputFile.absolutePath
     
-    // Конвертация видео
     try {
-      convertWithCustomFormat(
+      // Notify start of conversion
+      sendProgress(videoPath, 0.0)
+      
+      convertVideoImpl(
         inputPath = videoPath,
         outputPath = outputPath,
         outputFormat = outputFormat,
-        compressionRate = compressionRate,
-        startProgress = 0.0,
-        endProgress = 1.0
+        compressionRate = compressionRate
       )
       
-      // Add a small delay to ensure all progress updates are sent
-      // before returning the result
-      Thread.sleep(200)
+      // Ensure 100% progress is sent
+      sendProgress(videoPath, 1.0)
       
-      return outputPath
-    } catch (e: Exception) {
-      throw IOException("Failed to convert video: ${e.message}", e)
-    }
-  }
-  
-  private fun convertVideoToMp4WithScaledProgress(
-    videoPath: String, 
-    startProgress: Double = 0.0, 
-    endProgress: Double = 1.0
-  ): String {
-    // Create output file in a more accessible location (external cache)
-    val outputFileName = "converted_${Date().time}.mp4"
-    val outputDir = File(context.externalCacheDir, "converted_videos").apply {
-      if (!exists()) {
-        mkdirs()
-      }
-    }
-    val outputFile = File(outputDir, outputFileName)
-    val outputPath = outputFile.absolutePath
-    
-    // Use the MediaMuxer approach
-    try {
-      convertWithMuxer(videoPath, outputPath, startProgress, endProgress)
-      
-      // Add a small delay to ensure all progress updates are sent
-      // before returning the result
-      Thread.sleep(200)
+      // Small delay to ensure progress updates are completed
+      Thread.sleep(100)
       
       return outputPath
     } catch (e: Exception) {
@@ -270,17 +205,12 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
   }
   
   @Throws(IOException::class)
-  private fun convertWithCustomFormat(
+  private fun convertVideoImpl(
     inputPath: String,
     outputPath: String,
     outputFormat: Int,
-    compressionRate: Double,
-    startProgress: Double = 0.0,
-    endProgress: Double = 1.0
+    compressionRate: Double
   ) {
-    // Calculate the progress range for this conversion
-    val progressRange = endProgress - startProgress
-    
     // Create extractor to read input
     val extractor = MediaExtractor()
     extractor.setDataSource(inputPath)
@@ -292,8 +222,7 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     val trackCount = extractor.trackCount
     val indexMap = HashMap<Int, Int>(trackCount)
     
-    // Use a simpler progress approach based on tracks
-    val trackDurations = LongArray(trackCount)
+    // Track duration info for progress calculation
     var totalDuration: Long = 0
     
     // First pass: setup tracks and get duration information
@@ -302,22 +231,20 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
       val format = extractor.getTrackFormat(i)
       val mime = format.getString(MediaFormat.KEY_MIME)
       
+      // Get track duration if available
+      if (format.containsKey(MediaFormat.KEY_DURATION)) {
+        val trackDuration = format.getLong(MediaFormat.KEY_DURATION)
+        totalDuration = Math.max(totalDuration, trackDuration)
+      }
+      
       if (mime?.startsWith("video/") == true) {
-        // Get track duration if available
-        var trackDuration: Long = 0
-        if (format.containsKey(MediaFormat.KEY_DURATION)) {
-          trackDuration = format.getLong(MediaFormat.KEY_DURATION)
-          trackDurations[i] = trackDuration
-          totalDuration = Math.max(totalDuration, trackDuration)
-        }
-        
-        // Modify the video bitrate to match selected quality
+        // Modify video settings based on quality
         if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
           val originalBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE)
           val newBitrate = (originalBitrate * compressionRate).toInt()
           format.setInteger(MediaFormat.KEY_BIT_RATE, newBitrate)
         } else {
-          // Установка битрейта по умолчанию в зависимости от качества
+          // Set default bitrate based on quality
           val defaultBitrate = when {
             compressionRate >= 0.8 -> 3000000 // High quality: ~3 Mbps
             compressionRate >= 0.5 -> 1500000 // Medium quality: ~1.5 Mbps
@@ -326,19 +253,18 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
           format.setInteger(MediaFormat.KEY_BIT_RATE, defaultBitrate)
         }
         
-        // Добавление параметров для управления качеством
+        // Set key frame interval based on quality
         if (compressionRate < 0.5) {
-          // При низком качестве мы уменьшаем частоту ключевых кадров
-          format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 5) // Ключевой кадр каждые 5 секунд
+          format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 5) // Key frame every 5 seconds for low quality
         } else {
-          format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2) // Ключевой кадр каждые 2 секунды
+          format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2) // Key frame every 2 seconds for higher quality
         }
         
         // Add track to muxer
         val trackIndex = muxer.addTrack(format)
         indexMap[i] = trackIndex
       } else if (mime?.startsWith("audio/") == true) {
-        // For audio tracks, we can reduce bitrate too but not as aggressively
+        // For audio tracks, apply more gentle compression
         if (format.containsKey(MediaFormat.KEY_BIT_RATE)) {
           val originalBitrate = format.getInteger(MediaFormat.KEY_BIT_RATE)
           // Audio compression is less aggressive
@@ -361,7 +287,7 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     val buffer = ByteBuffer.allocate(maxBufferSize)
     val bufferInfo = MediaCodec.BufferInfo()
     
-    // Process tracks and update progress based on presentation time
+    // Process tracks and update progress
     for (i in 0 until trackCount) {
       if (!indexMap.containsKey(i)) continue
       
@@ -381,8 +307,7 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
         // Update progress based on presentation time
         if (totalDuration > 0) {
           val videoProgress = bufferInfo.presentationTimeUs.toDouble() / totalDuration.toDouble()
-          val scaledProgress = startProgress + (videoProgress * progressRange)
-          updateProgressWithPathSync(inputPath, scaledProgress)
+          sendProgress(inputPath, videoProgress)
         }
         
         extractor.advance()
@@ -391,30 +316,29 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
       extractor.unselectTrack(i)
     }
     
-    // Update progress to the end of this video's range
-    updateProgressWithPathSync(inputPath, endProgress)
-    
     // Release resources
     muxer.stop()
     muxer.release()
     extractor.release()
   }
   
-  @Throws(IOException::class)
-  private fun convertWithMuxer(
-    inputPath: String, 
-    outputPath: String, 
-    startProgress: Double = 0.0, 
-    endProgress: Double = 1.0
-  ) {
-    // Используем новую реализацию с параметрами по умолчанию
-    convertWithCustomFormat(
-      inputPath = inputPath,
-      outputPath = outputPath,
-      outputFormat = MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4,
-      compressionRate = 0.6, // средний уровень качества
-      startProgress = startProgress,
-      endProgress = endProgress
-    )
+  private fun convertMultipleVideosToMp4(videoPaths: List<String>): List<String> {
+    val outputPaths = mutableListOf<String>()
+    val totalVideos = videoPaths.size
+    
+    for ((index, videoPath) in videoPaths.withIndex()) {
+      try {
+        // Convert the individual video
+        val outputPath = convertVideo(videoPath, "medium", "mp4")
+        outputPaths.add(outputPath)
+      } catch (e: Exception) {
+        // Log the error but continue with other videos
+        e.printStackTrace()
+      }
+    }
+    
+    // Ensure 100% progress is sent at the end
+    sendProgress(videoPaths[0], 1.0)
+    return outputPaths
   }
 }
