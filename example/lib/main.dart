@@ -69,7 +69,6 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
         _isConverting = true;
         _conversionProgress = 0.0;
       });
-
       _convertedVideoPath = await converter.FlutterVideoConverter.convertVideo(
         _videoFile!,
         quality: _selectedQuality,
@@ -275,6 +274,13 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
                 onPressed: _pickVideo,
                 icon: const Icon(Icons.attach_file),
                 label: const Text('Select Video'),
+              ),
+              ElevatedButton.icon(
+                onPressed: () {
+                  converter.FlutterVideoConverter.clearCache();
+                },
+                icon: const Icon(Icons.attach_file),
+                label: const Text('Clear Cache'),
               ),
 
               // Настройки конвертации
