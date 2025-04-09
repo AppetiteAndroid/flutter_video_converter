@@ -30,8 +30,10 @@ dependencies:
   cupertino_icons: ^1.0.2
 
   # Additional dependencies for video handling
-  image_picker: ^1.0.0
-  video_player: ^2.6.0
+  image_picker: ^1.1.2
+  photo_manager: ^3.6.3
+  video_player: ^2.9.5
+  photo_manager_image_provider: ^2.2.0
   path_provider: ^2.0.15
 
 dev_dependencies:

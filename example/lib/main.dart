@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_video_converter/flutter_video_converter.dart' as converter;
 import 'dart:io';
-import 'package:image_picker/image_picker.dart';
+import 'dart:typed_data';
+import 'package:photo_manager/photo_manager.dart';
 import 'package:video_player/video_player.dart';
 
 void main() {
@@ -38,22 +39,178 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
   double _conversionProgress = 0.0;
   VideoPlayerController? _videoController;
   bool _isVideoPlayerInitialized = false;
+  bool _isGalleryOpen = false;
+  final List<AssetEntity> _videoAssets = [];
+  int _currentPage = 0;
+  final int _pageSize = 30;
+  bool _hasMoreToLoad = true;
 
-  // Новые параметры для настройки конвертации
+  // Conversion parameters
   converter.VideoQuality _selectedQuality = converter.VideoQuality.medium;
   converter.VideoFormat _selectedFormat = converter.VideoFormat.mp4;
 
-  Future<void> _pickVideo() async {
-    final picker = ImagePicker();
-    final XFile? pickedVideo = await picker.pickVideo(source: ImageSource.gallery);
+  @override
+  void initState() {
+    super.initState();
+    _checkPermission();
+  }
 
-    if (pickedVideo != null) {
+  Future<void> _checkPermission() async {
+    final PermissionState permissionState = await PhotoManager.requestPermissionExtend();
+    if (permissionState.isAuth) {
+      _loadAssets();
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Please grant photo library access to select videos'),
+          action: SnackBarAction(
+            label: 'Settings',
+            onPressed: () async {
+              await PhotoManager.openSetting();
+            },
+          ),
+        ),
+      );
+    }
+  }
+
+  Future<void> _loadAssets() async {
+    if (!_hasMoreToLoad) return;
+
+    final List<AssetPathEntity> paths = await PhotoManager.getAssetPathList(
+      type: RequestType.video,
+    );
+
+    if (paths.isEmpty) return;
+
+    final List<AssetEntity> videos = await paths.first.getAssetListPaged(
+      page: _currentPage,
+      size: _pageSize,
+    );
+
+    setState(() {
+      _videoAssets.addAll(videos);
+      _currentPage++;
+      _hasMoreToLoad = videos.length >= _pageSize;
+    });
+  }
+
+  Future<void> _openGallery() async {
+    setState(() {
+      _isGalleryOpen = true;
+    });
+
+    if (_videoAssets.isEmpty) {
+      await _loadAssets();
+    }
+  }
+
+  Future<void> _selectVideo(AssetEntity asset) async {
+    final File? file = await asset.file;
+    if (file != null) {
       setState(() {
-        _videoFile = File(pickedVideo.path);
+        _videoFile = file;
         _convertedVideoPath = null;
+        _isGalleryOpen = false;
         _disposeVideoPlayer();
       });
     }
+  }
+
+  Widget _buildGalleryView() {
+    return Column(
+      children: [
+        AppBar(
+          title: const Text('Select a Video'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () {
+              setState(() {
+                _isGalleryOpen = false;
+              });
+            },
+          ),
+        ),
+        Expanded(
+          child: _videoAssets.isEmpty
+              ? const Center(child: CircularProgressIndicator())
+              : GridView.builder(
+                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount: 3,
+                    crossAxisSpacing: 2,
+                    mainAxisSpacing: 2,
+                  ),
+                  itemCount: _videoAssets.length + (_hasMoreToLoad ? 1 : 0),
+                  itemBuilder: (context, index) {
+                    if (index == _videoAssets.length) {
+                      return GestureDetector(
+                        onTap: _loadAssets,
+                        child: const Center(
+                          child: Icon(Icons.more_horiz, size: 40),
+                        ),
+                      );
+                    }
+
+                    final asset = _videoAssets[index];
+                    return GestureDetector(
+                      onTap: () => _selectVideo(asset),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          FutureBuilder<Uint8List?>(
+                            future: asset.thumbnailData,
+                            builder: (_, snapshot) {
+                              if (snapshot.hasData && snapshot.data != null) {
+                                return Image.memory(
+                                  snapshot.data!,
+                                  fit: BoxFit.cover,
+                                  width: double.infinity,
+                                  height: double.infinity,
+                                );
+                              }
+                              return Container(
+                                color: Colors.grey[300],
+                                child: const Center(
+                                  child: CircularProgressIndicator(),
+                                ),
+                              );
+                            },
+                          ),
+                          const Icon(
+                            Icons.play_circle_outline,
+                            color: Colors.white,
+                            size: 30,
+                          ),
+                          Positioned(
+                            bottom: 5,
+                            right: 5,
+                            child: Container(
+                              padding: const EdgeInsets.all(2),
+                              color: Colors.black54,
+                              child: Text(
+                                _formatDuration(asset.duration),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  String _formatDuration(int seconds) {
+    final Duration duration = Duration(seconds: seconds);
+    final String minutes = (duration.inMinutes % 60).toString().padLeft(2, '0');
+    final String secs = (duration.inSeconds % 60).toString().padLeft(2, '0');
+    return '$minutes:$secs';
   }
 
   Future<void> _convertToMp4() async {
@@ -76,7 +233,6 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
         onProgress: (path, progress) {
           setState(() {
             _conversionProgress = progress;
-            // You can use the input path if needed
             print('Converting: $path - Progress: ${(progress * 100).toStringAsFixed(0)}%');
           });
         },
@@ -142,7 +298,7 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
         const Padding(
           padding: EdgeInsets.only(left: 8.0, top: 16.0, bottom: 8.0),
           child: Text(
-            'Качество видео:',
+            'Video Quality:',
             style: TextStyle(fontWeight: FontWeight.bold),
           ),
         ),
@@ -150,7 +306,7 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
           spacing: 8.0,
           children: [
             ChoiceChip(
-              label: const Text('Высокое'),
+              label: const Text('High'),
               selected: _selectedQuality == converter.VideoQuality.high,
               onSelected: (selected) {
                 if (selected) {
@@ -161,7 +317,7 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
               },
             ),
             ChoiceChip(
-              label: const Text('Среднее'),
+              label: const Text('Medium'),
               selected: _selectedQuality == converter.VideoQuality.medium,
               onSelected: (selected) {
                 if (selected) {
@@ -172,7 +328,7 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
               },
             ),
             ChoiceChip(
-              label: const Text('Низкое'),
+              label: const Text('Low'),
               selected: _selectedQuality == converter.VideoQuality.low,
               onSelected: (selected) {
                 if (selected) {
@@ -195,7 +351,7 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
         const Padding(
           padding: EdgeInsets.only(left: 8.0, top: 16.0, bottom: 8.0),
           child: Text(
-            'Формат видео:',
+            'Video Format:',
             style: TextStyle(fontWeight: FontWeight.bold),
           ),
         ),
@@ -254,6 +410,14 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
 
   @override
   Widget build(BuildContext context) {
+    if (_isGalleryOpen) {
+      return Scaffold(
+        body: SafeArea(
+          child: _buildGalleryView(),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
@@ -266,29 +430,33 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: <Widget>[
               const Text(
-                'Select videos to convert',
+                'Select a video to convert',
                 style: TextStyle(fontSize: 18),
               ),
               const SizedBox(height: 20),
               ElevatedButton.icon(
-                onPressed: _pickVideo,
-                icon: const Icon(Icons.attach_file),
-                label: const Text('Select Video'),
+                onPressed: _openGallery,
+                icon: const Icon(Icons.video_library),
+                label: const Text('Select from Gallery'),
               ),
+              const SizedBox(height: 10),
               ElevatedButton.icon(
                 onPressed: () {
                   converter.FlutterVideoConverter.clearCache();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Cache cleared')),
+                  );
                 },
-                icon: const Icon(Icons.attach_file),
+                icon: const Icon(Icons.cleaning_services),
                 label: const Text('Clear Cache'),
               ),
 
-              // Настройки конвертации
+              // Conversion settings
               if (_videoFile != null) ...[
                 const SizedBox(height: 20),
                 const Divider(),
                 const Text(
-                  'Параметры конвертации',
+                  'Conversion Settings',
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                 ),
                 _buildQualitySelector(),

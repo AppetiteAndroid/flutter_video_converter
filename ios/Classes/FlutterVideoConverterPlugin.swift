@@ -23,12 +23,7 @@ import AVFoundation
         return
       }
       
-      // Backwards compatibility - uses mp4 format with medium quality
-      convertVideo(
-        videoPath: videoPath, 
-        quality: "medium", 
-        format: "mp4"
-      ) { outputPath, error in
+      convertVideoToMP4(videoPath: videoPath) { outputPath, error in
         if let error = error {
           result(FlutterError(code: "CONVERSION_ERROR", message: error.localizedDescription, details: nil))
         } else if let outputPath = outputPath {
@@ -45,14 +40,10 @@ import AVFoundation
         return
       }
       
-      let quality = args["quality"] as? String ?? "medium"
-      let format = args["format"] as? String ?? "mp4"
+      // Ignore quality and format parameters on iOS - always convert to MP4
+      print("Note: iOS always converts to MP4 format regardless of parameters")
       
-      convertVideo(
-        videoPath: videoPath,
-        quality: quality,
-        format: format
-      ) { outputPath, error in
+      convertVideoToMP4(videoPath: videoPath) { outputPath, error in
         if let error = error {
           result(FlutterError(code: "CONVERSION_ERROR", message: error.localizedDescription, details: nil))
         } else if let outputPath = outputPath {
@@ -85,7 +76,7 @@ import AVFoundation
         return
       }
       
-      convertMultipleVideosToMP4(videoPaths: videoPaths) { outputPaths in
+      convertMultipleToMP4(videoPaths: videoPaths) { outputPaths in
         result(outputPaths)
       }
       
@@ -94,37 +85,33 @@ import AVFoundation
     }
   }
   
-  private func convertMultipleVideosToMP4(videoPaths: [String], completion: @escaping ([String]) -> Void) {
+  private func convertMultipleToMP4(videoPaths: [String], completion: @escaping ([String]) -> Void) {
+    var outputPaths = [String]()
     let totalVideos = videoPaths.count
-    var convertedPaths: [String] = []
-    var completedCount = 0
+    let dispatchGroup = DispatchGroup()
     
     for (index, videoPath) in videoPaths.enumerated() {
+      dispatchGroup.enter()
+      
       let startProgress = Double(index) / Double(totalVideos)
       let endProgress = Double(index + 1) / Double(totalVideos)
       
-      convertVideoToMP4(
+      convertVideoToMP4WithScaledProgress(
         videoPath: videoPath,
-        progressRange: (startProgress, endProgress)
+        startProgress: startProgress,
+        endProgress: endProgress
       ) { outputPath, error in
-        DispatchQueue.main.async {
-          completedCount += 1
-          
-          if let outputPath = outputPath {
-            convertedPaths.append(outputPath)
-          }
-          
-          // If this is the last video, complete the process
-          if completedCount == totalVideos {
-            completion(convertedPaths)
-          }
+        if let outputPath = outputPath {
+          outputPaths.append(outputPath)
         }
+        dispatchGroup.leave()
       }
     }
     
-    // If there are no videos to convert, return an empty array
-    if videoPaths.isEmpty {
-      completion([])
+    dispatchGroup.notify(queue: .main) {
+      // Ensure 100% progress is sent at the end
+      self.progressEventSink?(1.0)
+      completion(outputPaths)
     }
   }
   
@@ -137,66 +124,27 @@ import AVFoundation
     progressEventSink?(progressData)
   }
   
-  private func convertVideo(
+  private func convertVideoToMP4(videoPath: String, completion: @escaping (String?, Error?) -> Void) {
+    convertVideoToMP4WithScaledProgress(
+      videoPath: videoPath, 
+      startProgress: 0.0, 
+      endProgress: 1.0, 
+      completion: completion
+    )
+  }
+  
+  private func convertVideoToMP4WithScaledProgress(
     videoPath: String,
-    quality: String,
-    format: String,
+    startProgress: Double = 0.0,
+    endProgress: Double = 1.0,
     completion: @escaping (String?, Error?) -> Void
   ) {
     let sourceURL = URL(fileURLWithPath: videoPath)
     
-    // Determine quality preset and compression settings
-    let preset: String
-    
-    // Get asset to determine video dimensions for appropriate bitrate
-    let asset = AVAsset(url: sourceURL)
-    
-    // Determine appropriate bitrate based on quality setting
-    let videoBitrate: Int
-    switch quality {
-    case "high":
-      preset = AVAssetExportPresetHighestQuality
-      videoBitrate = 8000000  // 8 Mbps for high quality
-    case "medium":
-      preset = AVAssetExportPresetMediumQuality
-      videoBitrate = 2000000  // 2 Mbps for medium quality
-    case "low":
-      preset = AVAssetExportPresetLowQuality
-      videoBitrate = 750000   // 750 Kbps for low quality
-    default:
-      preset = AVAssetExportPresetMediumQuality
-      videoBitrate = 2000000  // Default to medium
-    }
-    
-    // Set video compression settings if format supports it
-    if format == "mp4" || format == "mov" {
-      // We'll use preset instead of trying to configure custom settings
-      // as AVAssetExportSession doesn't support direct videoSettings configuration
-    }
-    
-    // Determine file type
-    let fileType: AVFileType
-    let fileExtension: String
-    switch format {
-    case "mp4":
-      fileType = .mp4
-      fileExtension = "mp4"
-    case "mov":
-      fileType = .mov
-      fileExtension = "mov"
-    case "webm", "avi":
-      // WebM and AVI not directly supported on iOS, use MP4
-      fileType = .mp4
-      fileExtension = "mp4"
-    default:
-      fileType = .mp4
-      fileExtension = "mp4"
-    }
-    
-    // Create output URL in cache directory with unique name based on input params
-    let hashString = "\(videoPath)|\(quality)|\(format)"
+    // Create output URL in cache directory with unique name
+    let hashString = videoPath
     let hash = abs(hashString.hash)
-    let outputFileName = "converted_\(hash).\(fileExtension)"
+    let outputFileName = "converted_\(hash).mp4"
     let cacheDirectory = getCacheDirectory()
     let outputURL = cacheDirectory.appendingPathComponent(outputFileName)
     
@@ -216,80 +164,79 @@ import AVFoundation
       }
     }
     
-    // Try to use AVAssetExportSession with explicit compression settings if possible
-    if let exportSession = AVAssetExportSession(asset: asset, presetName: preset) {
-      // Configure export session
-      exportSession.outputURL = outputURL
-      exportSession.outputFileType = fileType
-      exportSession.shouldOptimizeForNetworkUse = true
-      
-      // Get video duration for progress tracking
-      let durationInSeconds = CMTimeGetSeconds(asset.duration)
-      
-      // Set up initial progress
-      sendProgress(path: videoPath, progress: 0.0)
-      
-      // Create a timer to monitor progress
-      var progressTimer: Timer?
-      progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak exportSession] timer in
-        guard let session = exportSession else {
-          timer.invalidate()
-          return
-        }
-        
-        // Get actual progress from export session
-        let progress = Double(session.progress)
-        sendProgress(path: videoPath, progress: progress)
-        
-        // If export is complete or failed, invalidate timer
-        if session.status == .completed || session.status == .failed || session.status == .cancelled {
-          timer.invalidate()
-        }
+    // Setup asset
+    let asset = AVAsset(url: sourceURL)
+    
+    // Check if a more compatible preset might work better
+    let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
+    let preferredPresets = [
+      AVAssetExportPresetPassthrough,  // Try passthrough first to maintain quality
+      AVAssetExportPresetHighestQuality,
+      AVAssetExportPresetMediumQuality,
+      AVAssetExportPreset1920x1080,    // Full HD
+      AVAssetExportPreset1280x720      // HD
+    ]
+    
+    // Find the highest quality compatible preset
+    var selectedPreset = AVAssetExportPresetMediumQuality // Default fallback
+    for preset in preferredPresets {
+      if compatiblePresets.contains(preset) {
+        selectedPreset = preset
+        print("Using preset: \(preset)")
+        break
       }
-      
-      // Start the export
-      exportSession.exportAsynchronously { [weak progressTimer] in
-        // Ensure timer is stopped
-        progressTimer?.invalidate()
-        
-        DispatchQueue.main.async {
-          switch exportSession.status {
-          case .completed:
-            sendProgress(path: videoPath, progress: 1.0)
-            completion(outputURL.path, nil)
-          case .failed:
-            let error = exportSession.error ?? NSError(domain: "VideoConverter", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export failed"])
-            sendProgress(path: videoPath, progress: 1.0)
-            completion(nil, error)
-          case .cancelled:
-            sendProgress(path: videoPath, progress: 1.0)
-            completion(nil, NSError(domain: "VideoConverter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Export cancelled"]))
-          default:
-            sendProgress(path: videoPath, progress: 1.0)
-            completion(nil, NSError(domain: "VideoConverter", code: -3, userInfo: [NSLocalizedDescriptionKey: "Export completed with unknown status"]))
-          }
-        }
-      }
-    } else {
-      // Failed to create export session
-      let error = NSError(domain: "VideoConverter", code: -4, userInfo: [NSLocalizedDescriptionKey: "Failed to create export session"])
-      sendProgress(path: videoPath, progress: 1.0)
-      completion(nil, error)
     }
-  }
-  
-  private func convertVideoToMP4(
-    videoPath: String,
-    progressRange: (start: Double, end: Double)? = nil,
-    completion: @escaping (String?, Error?) -> Void
-  ) {
-    // Используем обновленный метод с параметрами по умолчанию
-    convertVideo(
-      videoPath: videoPath,
-      quality: "medium",
-      format: "mp4",
-      completion: completion
-    )
+    
+    guard let exportSession = AVAssetExportSession(asset: asset, presetName: selectedPreset) else {
+      completion(nil, NSError(domain: "VideoConverter", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create export session"]))
+      return
+    }
+    
+    // Configure export session
+    exportSession.outputURL = outputURL
+    exportSession.outputFileType = .mp4
+    exportSession.shouldOptimizeForNetworkUse = true
+    
+    // Calculate the progress range for this conversion
+    let progressRange = endProgress - startProgress
+    
+    // Setup progress monitoring
+    let progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+      if exportSession.status == .exporting {
+        // Scale the progress to fit in our range
+        let scaledProgress = startProgress + (Double(exportSession.progress) * progressRange)
+        DispatchQueue.main.async {
+          self?.sendProgress(path: videoPath, progress: scaledProgress)
+        }
+      } else if exportSession.status != .waiting {
+        timer.invalidate()
+      }
+    }
+    
+    // Export file
+    exportSession.exportAsynchronously { [weak self] in
+      progressTimer.invalidate()
+      
+      // Ensure final progress is sent at completion for this segment
+      if exportSession.status == .completed {
+        DispatchQueue.main.async {
+          self?.sendProgress(path: videoPath, progress: endProgress)
+        }
+      }
+      
+      switch exportSession.status {
+      case .completed:
+        completion(outputURL.path, nil)
+      case .failed:
+        print("Export failed: \(String(describing: exportSession.error?.localizedDescription))")
+        print("Error details: \(String(describing: exportSession.error))")
+        completion(nil, exportSession.error)
+      case .cancelled:
+        completion(nil, NSError(domain: "VideoConverter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Export cancelled"]))
+      default:
+        completion(nil, NSError(domain: "VideoConverter", code: -3, userInfo: [NSLocalizedDescriptionKey: "Unknown error"]))
+      }
+    }
   }
   
   // MARK: - FlutterStreamHandler
