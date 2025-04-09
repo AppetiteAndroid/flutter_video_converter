@@ -223,94 +223,58 @@ import AVFoundation
       exportSession.outputFileType = fileType
       exportSession.shouldOptimizeForNetworkUse = true
       
-      // For fine-tuning quality, we have to rely on the preset
-      // AVAssetExportSession doesn't support direct video settings modifications
-      
       // Get video duration for progress tracking
       let durationInSeconds = CMTimeGetSeconds(asset.duration)
       
       // Set up initial progress
       sendProgress(path: videoPath, progress: 0.0)
       
-      // Calculate estimated total time based on video duration and quality
-      // Higher quality takes longer to process
-      let estimatedFactor: Double
-      switch quality {
-      case "high":
-        estimatedFactor = 0.3 // 30% of video duration
-      case "medium":
-        estimatedFactor = 0.2 // 20% of video duration
-      case "low":
-        estimatedFactor = 0.15 // 15% of video duration
-      default:
-        estimatedFactor = 0.2
-      }
-      
-      let estimatedDurationSeconds = max(durationInSeconds * estimatedFactor, 2.0) // At least 2 seconds
-      
-      // Create our own progress timer to avoid unreliable progress from AVAssetExportSession
-      let startTime = Date()
-      var lastReportedProgress = 0.0
-      
-      let progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
-        // Calculate progress based on elapsed time compared to estimated duration
-        let elapsedSeconds = Date().timeIntervalSince(startTime)
-        let progress = min(0.99, elapsedSeconds / estimatedDurationSeconds)
-        
-        // Only send updates if progress increased by at least 1%
-        if progress - lastReportedProgress >= 0.01 {
-          lastReportedProgress = progress
-          DispatchQueue.main.async {
-            self?.sendProgress(path: videoPath, progress: progress)
-          }
+      // Create a timer to monitor progress
+      var progressTimer: Timer?
+      progressTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak exportSession] timer in
+        guard let session = exportSession else {
+          timer.invalidate()
+          return
         }
         
-        // Check export session status
-        if exportSession.status != .exporting && exportSession.status != .waiting {
+        // Get actual progress from export session
+        let progress = Double(session.progress)
+        sendProgress(path: videoPath, progress: progress)
+        
+        // If export is complete or failed, invalidate timer
+        if session.status == .completed || session.status == .failed || session.status == .cancelled {
           timer.invalidate()
         }
       }
       
-      // Export file
-      exportSession.exportAsynchronously {
-        progressTimer.invalidate()
+      // Start the export
+      exportSession.exportAsynchronously { [weak progressTimer] in
+        // Ensure timer is stopped
+        progressTimer?.invalidate()
         
-        // Send final progress update
-        DispatchQueue.main.async { [weak self] in
-          if exportSession.status == .completed {
-            self?.sendProgress(path: videoPath, progress: 1.0)
-          }
-        }
-        
-        switch exportSession.status {
-        case .completed:
-          // Log file size for debugging
-          do {
-            if let fileSize = try FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber {
-              print("Converted video size (\(quality) quality): \(fileSize.intValue / 1024 / 1024) MB")
-            }
-          } catch {
-            print("Failed to get file size: \(error)")
-          }
-          
-          // Wait a moment before returning the result
-          DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+        DispatchQueue.main.async {
+          switch exportSession.status {
+          case .completed:
+            sendProgress(path: videoPath, progress: 1.0)
             completion(outputURL.path, nil)
+          case .failed:
+            let error = exportSession.error ?? NSError(domain: "VideoConverter", code: -1, userInfo: [NSLocalizedDescriptionKey: "Export failed"])
+            sendProgress(path: videoPath, progress: 1.0)
+            completion(nil, error)
+          case .cancelled:
+            sendProgress(path: videoPath, progress: 1.0)
+            completion(nil, NSError(domain: "VideoConverter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Export cancelled"]))
+          default:
+            sendProgress(path: videoPath, progress: 1.0)
+            completion(nil, NSError(domain: "VideoConverter", code: -3, userInfo: [NSLocalizedDescriptionKey: "Export completed with unknown status"]))
           }
-        case .failed:
-          self.sendProgress(path: videoPath, progress: 1.0) // Ensure final progress even on error
-          print("Export failed with error: \(exportSession.error?.localizedDescription ?? "Unknown error")")
-          completion(nil, exportSession.error)
-        case .cancelled:
-          self.sendProgress(path: videoPath, progress: 1.0) // Ensure final progress even on error
-          completion(nil, NSError(domain: "VideoConverter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Export cancelled"]))
-        default:
-          self.sendProgress(path: videoPath, progress: 1.0) // Ensure final progress even on error
-          completion(nil, NSError(domain: "VideoConverter", code: -3, userInfo: [NSLocalizedDescriptionKey: "Unknown error"]))
         }
       }
     } else {
-      completion(nil, NSError(domain: "VideoConverter", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create export session"]))
+      // Failed to create export session
+      let error = NSError(domain: "VideoConverter", code: -4, userInfo: [NSLocalizedDescriptionKey: "Failed to create export session"])
+      sendProgress(path: videoPath, progress: 1.0)
+      completion(nil, error)
     }
   }
   
