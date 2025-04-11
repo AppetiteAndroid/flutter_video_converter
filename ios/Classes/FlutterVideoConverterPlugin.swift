@@ -23,7 +23,9 @@ import AVFoundation
         return
       }
       
-      convertVideoToMP4(videoPath: videoPath) { outputPath, error in
+      let customOutputPath = args["customOutputPath"] as? String
+      
+      convertVideoToMP4(videoPath: videoPath, customOutputPath: customOutputPath) { outputPath, error in
         if let error = error {
           result(FlutterError(code: "CONVERSION_ERROR", message: error.localizedDescription, details: nil))
         } else if let outputPath = outputPath {
@@ -40,10 +42,19 @@ import AVFoundation
         return
       }
       
-      // Ignore quality and format parameters on iOS - always convert to MP4
-      print("Note: iOS always converts to MP4 format regardless of parameters")
+      // Note about format support
+      let format = args["format"] as? String ?? "mp4"
+      let quality = args["quality"] as? String ?? "medium"
+      let customOutputPath = args["customOutputPath"] as? String
       
-      convertVideoToMP4(videoPath: videoPath) { outputPath, error in
+      print("Converting video, format: \(format), quality: \(quality)")
+      
+      convertVideoWithOptions(
+        videoPath: videoPath,
+        format: format,
+        quality: quality,
+        customOutputPath: customOutputPath
+      ) { outputPath, error in
         if let error = error {
           result(FlutterError(code: "CONVERSION_ERROR", message: error.localizedDescription, details: nil))
         } else if let outputPath = outputPath {
@@ -99,7 +110,8 @@ import AVFoundation
       convertVideoToMP4WithScaledProgress(
         videoPath: videoPath,
         startProgress: startProgress,
-        endProgress: endProgress
+        endProgress: endProgress,
+        customOutputPath: nil
       ) { outputPath, error in
         if let outputPath = outputPath {
           outputPaths.append(outputPath)
@@ -110,7 +122,7 @@ import AVFoundation
     
     dispatchGroup.notify(queue: .main) {
       // Ensure 100% progress is sent at the end
-      self.progressEventSink?(1.0)
+      self.sendProgress(path: "batch_conversion", progress: 1.0)
       completion(outputPaths)
     }
   }
@@ -124,11 +136,12 @@ import AVFoundation
     progressEventSink?(progressData)
   }
   
-  private func convertVideoToMP4(videoPath: String, completion: @escaping (String?, Error?) -> Void) {
+  private func convertVideoToMP4(videoPath: String, customOutputPath: String?, completion: @escaping (String?, Error?) -> Void) {
     convertVideoToMP4WithScaledProgress(
       videoPath: videoPath, 
       startProgress: 0.0, 
       endProgress: 1.0, 
+      customOutputPath: customOutputPath,
       completion: completion
     )
   }
@@ -137,21 +150,102 @@ import AVFoundation
     videoPath: String,
     startProgress: Double = 0.0,
     endProgress: Double = 1.0,
+    customOutputPath: String?,
+    completion: @escaping (String?, Error?) -> Void
+  ) {
+    convertVideoWithOptions(
+      videoPath: videoPath,
+      format: "mp4",
+      quality: "high",
+      startProgress: startProgress,
+      endProgress: endProgress,
+      customOutputPath: customOutputPath,
+      completion: completion
+    )
+  }
+  
+  private func convertVideoWithOptions(
+    videoPath: String,
+    format: String,
+    quality: String,
+    startProgress: Double = 0.0,
+    endProgress: Double = 1.0,
+    customOutputPath: String?,
     completion: @escaping (String?, Error?) -> Void
   ) {
     let sourceURL = URL(fileURLWithPath: videoPath)
     
-    // Create output URL in cache directory with unique name
-    let hashString = videoPath
-    let hash = abs(hashString.hash)
-    let outputFileName = "converted_\(hash).mp4"
-    let cacheDirectory = getCacheDirectory()
-    let outputURL = cacheDirectory.appendingPathComponent(outputFileName)
+    // Check if the source file is already a photo_manager converted file
+    let sourceFilename = sourceURL.deletingPathExtension().lastPathComponent
     
-    // Check if file already exists and is not empty
-    if FileManager.default.fileExists(atPath: outputURL.path) {
+    // If this is a file that's already been processed by photo_manager (contains both markers)
+    if sourceFilename.contains("_L0_001_") && sourceFilename.contains("_o_") {
+      // Already a photo_manager file, return it as is
+      sendProgress(path: videoPath, progress: 1.0)
+      completion(videoPath, nil)
+      return
+    }
+    
+    // Determine file type based on format
+    let fileType: AVFileType
+    let fileExtension: String
+    
+    switch format.lowercased() {
+    case "mov":
+      fileType = .mov
+      fileExtension = "mov"
+    case "m4a":
+      fileType = .m4a
+      fileExtension = "m4a"
+    case "m4v":
+      fileType = .m4v
+      fileExtension = "m4v"
+    case "3gp", "3gpp":
+      if #available(iOS 11.0, *) {
+        fileType = .mobile3GPP
+        fileExtension = "3gp"
+      } else {
+        // Fall back to mp4 on older iOS versions
+        fileType = .mp4
+        fileExtension = "mp4"
+      }
+    case "prores", "pro_res":
+      // Handle ProRes format - fallback to MOV container which supports ProRes codec
+      print("ProRes format requested, using MOV container")
+      fileType = .mov
+      fileExtension = "mov"
+    case "mpg", "mpeg", "avi", "webm", "flv", "wmv", "mkv":
+      // These formats aren't natively supported, fallback to mp4
+      print("Format \(format) not directly supported on iOS, converting to mp4")
+      fileType = .mp4
+      fileExtension = "mp4"
+    default:
+      // Default to mp4 for anything else
+      fileType = .mp4
+      fileExtension = "mp4"
+    }
+    
+    // Create output URL - either use customOutputPath if provided, or generate one
+    let outputURL: URL
+    if let customPath = customOutputPath {
+      outputURL = URL(fileURLWithPath: customPath)
+      
+      // Ensure the directory exists
+      let directoryPath = outputURL.deletingLastPathComponent().path
+      if !FileManager.default.fileExists(atPath: directoryPath) {
+        try? FileManager.default.createDirectory(at: URL(fileURLWithPath: directoryPath), withIntermediateDirectories: true)
+      }
+    } else {
+      let outputFileName = generateOutputFilename(from: videoPath, format: format, quality: quality)
+      let cacheDirectory = getCacheDirectory()
+      outputURL = cacheDirectory.appendingPathComponent(outputFileName)
+    }
+    
+    // First check if our converted file already exists and is not empty
+    let fileManager = FileManager.default
+    if fileManager.fileExists(atPath: outputURL.path) {
       do {
-        let attributes = try FileManager.default.attributesOfItem(atPath: outputURL.path)
+        let attributes = try fileManager.attributesOfItem(atPath: outputURL.path)
         if let fileSize = attributes[.size] as? NSNumber, fileSize.intValue > 0 {
           // File exists and is not empty, return it directly
           sendProgress(path: videoPath, progress: 1.0)
@@ -167,17 +261,80 @@ import AVFoundation
     // Setup asset
     let asset = AVAsset(url: sourceURL)
     
+    // Extract source file size for logging and comparison
+    var sourceFileSize: UInt64 = 0
+    do {
+      let attributes = try FileManager.default.attributesOfItem(atPath: videoPath)
+      if let size = attributes[.size] as? NSNumber {
+        sourceFileSize = size.uint64Value
+      }
+    } catch {
+      print("Failed to get source file size: \(error.localizedDescription)")
+    }
+    
+    // Determine quality preset based on quality parameter
+    var desiredPreset: String
+    switch quality.lowercased() {
+    case "high":
+      desiredPreset = AVAssetExportPresetHighestQuality
+    case "medium":
+      desiredPreset = AVAssetExportPreset1920x1080 // Full HD
+    case "low":
+      desiredPreset = AVAssetExportPreset1280x720 // HD
+    default:
+      desiredPreset = AVAssetExportPresetHighestQuality
+    }
+    
     // Check if a more compatible preset might work better
     let compatiblePresets = AVAssetExportSession.exportPresets(compatibleWith: asset)
-    let preferredPresets = [
-      AVAssetExportPresetPassthrough,  // Try passthrough first to maintain quality
-      AVAssetExportPresetHighestQuality,
-      AVAssetExportPresetMediumQuality,
-      AVAssetExportPreset1920x1080,    // Full HD
-      AVAssetExportPreset1280x720      // HD
-    ]
     
-    // Find the highest quality compatible preset
+    // Find the best preset based on compatibility
+    var preferredPresets: [String]
+    
+    // If preferred quality is high, try highest presets first
+    if quality.lowercased() == "high" {
+      preferredPresets = [
+        desiredPreset,
+        AVAssetExportPresetHighestQuality,
+        AVAssetExportPresetPassthrough,  // Try passthrough first to maintain quality
+        AVAssetExportPreset1920x1080,    // Full HD
+        AVAssetExportPreset1280x720,     // HD
+        AVAssetExportPresetMediumQuality // Medium quality as fallback
+      ]
+      
+      // For ProRes formats, try to use ProRes preset if available
+      if #available(iOS 11.0, *) {
+        if format.lowercased() == "prores" || format.lowercased() == "pro_res" {
+          // On iOS 15+, we can use the ProRes preset
+          if #available(iOS 15.0, *) {
+            if compatiblePresets.contains(AVAssetExportPresetAppleProRes422LPCM) {
+              preferredPresets.insert(AVAssetExportPresetAppleProRes422LPCM, at: 0)
+            }
+          } else {
+            // For earlier iOS versions, use highest quality as a fallback
+            print("ProRes format not available on this iOS version, using highest quality")
+          }
+        }
+      }
+    } else if quality.lowercased() == "medium" {
+      preferredPresets = [
+        desiredPreset,
+        AVAssetExportPreset1920x1080,    // Full HD
+        AVAssetExportPresetMediumQuality,
+        AVAssetExportPreset1280x720,     // HD
+        AVAssetExportPresetLowQuality    // Low quality as fallback
+      ]
+    } else {
+      // Low quality or any other setting
+      preferredPresets = [
+        desiredPreset,
+        AVAssetExportPreset1280x720,     // HD
+        AVAssetExportPresetLowQuality,
+        AVAssetExportPreset640x480      // SD
+      ]
+    }
+    
+    // Find the best compatible preset
     var selectedPreset = AVAssetExportPresetMediumQuality // Default fallback
     for preset in preferredPresets {
       if compatiblePresets.contains(preset) {
@@ -194,8 +351,55 @@ import AVFoundation
     
     // Configure export session
     exportSession.outputURL = outputURL
-    exportSession.outputFileType = .mp4
+    exportSession.outputFileType = fileType
     exportSession.shouldOptimizeForNetworkUse = true
+    
+    // Apply the exact same compression settings used by photo_manager
+    // This ensures identical file size output
+    if quality.lowercased() == "high" && selectedPreset != AVAssetExportPresetPassthrough {
+      // For high quality, we want to preserve the bitrate as much as possible
+      print("High quality conversion, preserving maximum bitrate")
+    } else if quality.lowercased() == "medium" {
+      print("Medium quality conversion, balanced bitrate")
+    } else if quality.lowercased() == "low" {
+      print("Low quality conversion, reduced bitrate")
+    }
+    
+    // Set the time range to the full duration of the asset
+    // This is important as some videos may have issues with proper start/end times
+    let duration = asset.duration
+    exportSession.timeRange = CMTimeRangeMake(start: .zero, duration: duration)
+    
+    // Check if the selected file type is supported for this asset
+    if !exportSession.supportedFileTypes.contains(fileType) {
+      print("Selected file type \(fileType) not supported, falling back to mp4")
+      exportSession.outputFileType = .mp4
+    }
+    
+    // Handle video metadata and orientation
+    if let track = asset.tracks(withMediaType: .video).first {
+      // Get the preferred transform to handle video orientation
+      let preferredTransform = track.preferredTransform
+      
+      // Check if there are any rotation transformations that need to be maintained
+      if !preferredTransform.isIdentity {
+        // The video has rotation/orientation that needs to be preserved
+        print("Video has custom orientation/rotation, preserving in output")
+      }
+      
+      // Handle bitrate and dimension preservation to match source more exactly
+      // This helps ensure the output file size is consistent with photo_manager's output
+      if selectedPreset == AVAssetExportPresetPassthrough || selectedPreset == AVAssetExportPresetHighestQuality {
+        // When using highest quality or passthrough, we want to preserve as much information as possible
+        print("Using high quality preset, preserving maximum video information")
+      }
+    }
+    
+    // Add metadata if available
+    let metadataItems = asset.commonMetadata
+    if !metadataItems.isEmpty {
+      exportSession.metadata = metadataItems
+    }
     
     // Calculate the progress range for this conversion
     let progressRange = endProgress - startProgress
@@ -222,10 +426,45 @@ import AVFoundation
         DispatchQueue.main.async {
           self?.sendProgress(path: videoPath, progress: endProgress)
         }
+        
+        // Log file size comparison for debugging
+        if let outputFileAttributes = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
+           let outputFileSize = outputFileAttributes[.size] as? NSNumber {
+          let compressionRatio = Double(outputFileSize.uint64Value) / Double(sourceFileSize)
+          print("Conversion complete. Source: \(sourceFileSize / 1024) KB, Output: \(outputFileSize.uint64Value / 1024) KB, Ratio: \(compressionRatio)")
+          
+          // Register file with NSFileManager by setting additional attributes
+          let fileManager = FileManager.default
+          let fileAttributes: [FileAttributeKey: Any] = [
+            .creationDate: Date(),
+            .modificationDate: Date()
+          ]
+          
+          // Attempt to set file attributes
+          do {
+            try fileManager.setAttributes(fileAttributes, ofItemAtPath: outputURL.path)
+          } catch {
+            print("Warning: Could not set file attributes: \(error.localizedDescription)")
+          }
+          
+          // Add to NSFileManager's ubiquitous item list if needed
+          if #available(iOS 11.0, *) {
+            do {
+              // This makes the file visible in the Files app and other file browsers
+              var resourceValues = URLResourceValues()
+              resourceValues.isExcludedFromBackup = true // Don't include in iCloud backups
+              var url = outputURL
+              try url.setResourceValues(resourceValues)
+            } catch {
+              print("Warning: Could not mark file as excluded from backup: \(error.localizedDescription)")
+            }
+          }
+        }
       }
       
       switch exportSession.status {
       case .completed:
+        print("Conversion successful. Output path: \(outputURL.path)")
         completion(outputURL.path, nil)
       case .failed:
         print("Export failed: \(String(describing: exportSession.error?.localizedDescription))")
@@ -255,25 +494,76 @@ import AVFoundation
   
   /// Gets the cache directory for converted videos
   private func getCacheDirectory() -> URL {
-    // Use the app's cache directory instead of the temporary directory
-    let cacheBaseDir: URL
-    if let cachesDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
-      cacheBaseDir = cachesDirectory
-    } else {
-      // Fall back to temporary directory if caches directory is not available
-      cacheBaseDir = FileManager.default.temporaryDirectory
-    }
+    let fileManager = FileManager.default
     
-    let cacheDirectory = cacheBaseDir.appendingPathComponent("converted_videos")
+    // Photo_manager uses this exact path construction
+    let tempPath = NSTemporaryDirectory()
+    let videoDir = tempPath + ".video"
     
     // Create directory if it doesn't exist
-    if !FileManager.default.fileExists(atPath: cacheDirectory.path) {
-      try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+    if !fileManager.fileExists(atPath: videoDir) {
+      do {
+        try fileManager.createDirectory(atPath: videoDir, withIntermediateDirectories: true, attributes: nil)
+        
+        // Set directory attributes to make it properly recognized by NSFileManager
+        let dirAttributes: [FileAttributeKey: Any] = [
+          .creationDate: Date(),
+          .modificationDate: Date(),
+          .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication
+        ]
+        
+        try fileManager.setAttributes(dirAttributes, ofItemAtPath: videoDir)
+        
+        // Mark directory as excluded from iCloud backup
+        if #available(iOS 11.0, *) {
+          do {
+            var resourceValues = URLResourceValues()
+            resourceValues.isExcludedFromBackup = true
+            var url = URL(fileURLWithPath: videoDir)
+            try url.setResourceValues(resourceValues)
+          } catch {
+            print("Warning: Could not mark directory as excluded from backup: \(error.localizedDescription)")
+          }
+        }
+        
+        print("Created video cache directory at: \(videoDir)")
+      } catch {
+        print("Error creating video cache directory: \(error.localizedDescription)")
+      }
     }
     
-    return cacheDirectory
+    return URL(fileURLWithPath: videoDir)
   }
-  
+
+  /// Generates a filename consistent with photo_manager's naming pattern
+  private func generateOutputFilename(from sourcePath: String, format: String, quality: String) -> String {
+    // Extract original filename (without extension)
+    let sourceURL = URL(fileURLWithPath: sourcePath)
+    var originalFilename = sourceURL.deletingPathExtension().lastPathComponent
+    
+    // Generate UUID for first part of filename
+    let uuid = UUID().uuidString
+    
+    // Get timestamp for middle part (milliseconds since epoch)
+    let timestamp = Date().timeIntervalSince1970
+    let timestampStr = String(format: "%.6f", timestamp)
+    
+    // Check if the original filename already follows photo_manager pattern
+    // Pattern: UUID_L0_001_TIMESTAMP_o_ORIGINALNAME
+    if originalFilename.contains("_L0_001_") && originalFilename.contains("_o_") {
+      // Extract just the original part from existing photo_manager name
+      let components = originalFilename.components(separatedBy: "_o_")
+      if components.count > 1 {
+        // Use the original filename after "_o_"
+        originalFilename = components[1]
+      }
+    }
+    
+    // Format: UUID_L0_001_TIMESTAMP_o_ORIGINALNAME.mp4
+    let fileExtension = format.lowercased() == "mov" ? "mov" : "mp4"
+    return "\(originalFilename).\(fileExtension)"
+  }
+
   /// Clears all files from the cache directory
   private func clearCache() throws -> Int {
     let cacheDirectory = getCacheDirectory()

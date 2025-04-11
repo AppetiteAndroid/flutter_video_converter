@@ -88,6 +88,7 @@ class FlutterVideoConverter {
   /// The [format] specifies the output video format (mp4, mov, webm, avi). Defaults to mp4.
   /// The [onProgress] callback provides progress updates during conversion (path, 0.0 to 1.0).
   /// The [useCache] determines whether to use cached conversions. Defaults to true.
+  /// The [customOutputPath] allows specifying an exact output path for the converted video.
   ///
   /// Returns the path to the converted video file, or null if conversion failed.
   static Future<String?> convertVideo(
@@ -96,8 +97,14 @@ class FlutterVideoConverter {
     VideoFormat format = VideoFormat.mp4,
     Function(String, double)? onProgress,
     bool useCache = true,
+    String? customOutputPath,
   }) async {
     try {
+      // If customOutputPath is provided, don't use cache
+      if (customOutputPath != null) {
+        useCache = false;
+      }
+
       // Create a cache key for this conversion
       final String cacheKey = _generateCacheKey(videoFile.path, quality, format);
 
@@ -162,11 +169,12 @@ class FlutterVideoConverter {
           'videoPath': videoFile.path,
           'quality': quality.value,
           'format': format.value,
+          'customOutputPath': customOutputPath,
         },
       );
 
-      // If conversion was successful, add to cache
-      if (outputPath != null) {
+      // If conversion was successful and we're not using a custom path, add to cache
+      if (outputPath != null && customOutputPath == null) {
         _conversionCache[cacheKey] = outputPath;
       }
 
@@ -266,5 +274,29 @@ class FlutterVideoConverter {
   /// Generates a unique cache key for a conversion.
   static String _generateCacheKey(String filePath, VideoQuality quality, VideoFormat format) {
     return '$filePath|${quality.value}|${format.value}';
+  }
+
+  /// Converts a video file to MP4 format.
+  ///
+  /// The [videoFile] is the source video file to convert.
+  /// The [onProgress] callback provides progress updates during conversion.
+  /// The [useCache] determines whether to use cached conversions. Defaults to true.
+  /// The [customOutputPath] allows specifying an exact output path for the converted video.
+  ///
+  /// Returns the path to the converted MP4 video file, or null if conversion failed.
+  static Future<String?> convertToMp4(
+    File videoFile, {
+    Function(String, double)? onProgress,
+    bool useCache = true,
+    String? customOutputPath,
+  }) async {
+    return convertVideo(
+      videoFile,
+      quality: VideoQuality.high,
+      format: VideoFormat.mp4,
+      onProgress: onProgress,
+      useCache: useCache,
+      customOutputPath: customOutputPath,
+    );
   }
 }

@@ -34,6 +34,7 @@ class VideoConverterPage extends StatefulWidget {
 
 class _VideoConverterPageState extends State<VideoConverterPage> {
   File? _videoFile;
+  File? _videoFileConverted;
   bool _isConverting = false;
   String? _convertedVideoPath;
   double _conversionProgress = 0.0;
@@ -41,6 +42,7 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
   bool _isVideoPlayerInitialized = false;
   bool _isGalleryOpen = false;
   final List<AssetEntity> _videoAssets = [];
+  AssetEntity? _asset;
   int _currentPage = 0;
   final int _pageSize = 30;
   bool _hasMoreToLoad = true;
@@ -52,6 +54,8 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
   @override
   void initState() {
     super.initState();
+    PhotoManager.clearFileCache();
+    converter.FlutterVideoConverter.clearCache();
     _checkPermission();
   }
 
@@ -107,6 +111,7 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
 
   Future<void> _selectVideo(AssetEntity asset) async {
     final File? file = await asset.file;
+    _asset = asset;
     if (file != null) {
       setState(() {
         _videoFile = file;
@@ -267,6 +272,19 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
     }
   }
 
+  String transformVideoPath(String originalPath) {
+    // Extract the file name from the path
+    String fileName = originalPath.split('/').last;
+
+    // Replace IMG_ with o_IMG_ and change extension to .mp4
+    String newFileName = fileName.replaceFirst('IMG_', 'o_IMG_').replaceAll('.MOV', '.mp4');
+
+    // Construct the new path by replacing the original filename
+    String newPath = originalPath.substring(0, originalPath.lastIndexOf('/') + 1) + newFileName;
+
+    return newPath;
+  }
+
   void _initializeVideoPlayer(String videoPath) {
     _disposeVideoPlayer();
 
@@ -410,6 +428,10 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
 
   @override
   Widget build(BuildContext context) {
+    print('Converted Photo  manager path: ${_videoFileConverted?.path}');
+    print('Converted:Plugin manager path: $_convertedVideoPath');
+    print('path: ${_videoFile?.path}');
+    print('path1: ${_asset?.id}');
     if (_isGalleryOpen) {
       return Scaffold(
         body: SafeArea(
@@ -441,11 +463,9 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
               ),
               const SizedBox(height: 10),
               ElevatedButton.icon(
-                onPressed: () {
-                  converter.FlutterVideoConverter.clearCache();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Cache cleared')),
-                  );
+                onPressed: () async {
+                  _videoFileConverted = await _asset?.loadFile(darwinFileType: PMDarwinAVFileType.mp4);
+                  setState(() {});
                 },
                 icon: const Icon(Icons.cleaning_services),
                 label: const Text('Clear Cache'),
@@ -508,9 +528,12 @@ class _VideoConverterPageState extends State<VideoConverterPage> {
                       ),
                 if (_convertedVideoPath != null) ...[
                   const SizedBox(height: 10),
-                  Text('Converted: ${_convertedVideoPath!.split('/').last}', style: const TextStyle(fontSize: 14, color: Colors.green)),
-                  Text('Converted size: ${(File(_convertedVideoPath!).lengthSync() / (1024 * 1024)).toStringAsFixed(2)} MB', style: const TextStyle(fontSize: 14, color: Colors.green)),
+                  Text('Converted: ${_convertedVideoPath!}', style: const TextStyle(fontSize: 14, color: Colors.green)),
+                  Text('Converted Plugin size: ${(File(_convertedVideoPath!).lengthSync() / (1024 * 1024))} MB', style: const TextStyle(fontSize: 14, color: Colors.green)),
                 ],
+                if (_videoFileConverted != null)
+                  Text('Converted Poto manager size: ${(_videoFileConverted!.lengthSync() / (1024 * 1024))} MB', style: const TextStyle(fontSize: 14, color: Colors.green)),
+                if (_videoFileConverted != null) Text('Converted Poto manager path: ${_videoFileConverted!.path}', style: const TextStyle(fontSize: 14, color: Colors.green)),
               ],
 
               // Video player section
