@@ -217,7 +217,6 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
     // Check if the file already exists
     if (outputFile.exists() && outputFile.length() > 0) {
       // File already exists, return it directly
-      Log.d("VideoConverter", "Using existing file: $outputPath")
       sendProgress(videoPath, 1.0)
       return outputPath
     }
@@ -248,11 +247,8 @@ class FlutterVideoConverterPlugin: FlutterPlugin, MethodCallHandler {
       val sourceSize = sourceFile.length()
       val ratio = (outputSize.toDouble() / sourceSize.toDouble() * 100).toInt()
       
-      Log.d("VideoConverter", "Conversion complete - Original: ${sourceSize / 1024}KB, Converted: ${outputSize / 1024}KB, Ratio: $ratio%")
-      
       return outputPath
     } catch (e: Exception) {
-      Log.e("VideoConverter", "Error during conversion: ${e.message}", e)
       sendProgress(videoPath, 1.0) // Ensure we send final progress even on error
       throw IOException("Failed to convert video: ${e.message}", e)
     }

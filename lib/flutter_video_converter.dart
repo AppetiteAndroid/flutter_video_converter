@@ -118,7 +118,6 @@ class FlutterVideoConverter {
           if (onProgress != null) {
             onProgress(videoFile.path, 1.0);
           }
-          debugPrint('Using cached conversion: $cachedPath');
           return cachedPath;
         } else {
           // File doesn't exist anymore, remove from cache
@@ -145,11 +144,9 @@ class FlutterVideoConverter {
             // Extract path and progress from the map
             path = event['path'] as String? ?? videoFile.path;
             progress = event['progress'] as double? ?? 0.0;
-            debugPrint('Progress update: $path - ${(progress * 100).toStringAsFixed(0)}%');
           } else if (event is double) {
             // Backward compatibility for platforms that only send progress
             progress = event;
-            debugPrint('Progress update: ${(progress * 100).toStringAsFixed(0)}%');
           } else {
             return; // Skip unknown event types
           }
@@ -192,7 +189,6 @@ class FlutterVideoConverter {
       await _activeProgressSubscription?.cancel();
       _activeProgressSubscription = null;
 
-      debugPrint('Failed to convert video: ${e.message}');
       return null;
     }
   }
@@ -213,7 +209,6 @@ class FlutterVideoConverter {
 
       return deletedCount;
     } on PlatformException catch (e) {
-      debugPrint('Failed to clear cache: ${e.message}');
       return 0;
     }
   }
@@ -246,7 +241,6 @@ class FlutterVideoConverter {
         _conversionCache.remove(cacheKey);
         return true;
       } catch (e) {
-        debugPrint('Failed to delete cached file: $e');
         return false;
       }
     }
@@ -266,7 +260,6 @@ class FlutterVideoConverter {
 
       return cachedFiles?.map((path) => path.toString()).toList() ?? [];
     } on PlatformException catch (e) {
-      debugPrint('Failed to get cached files: ${e.message}');
       return [];
     }
   }

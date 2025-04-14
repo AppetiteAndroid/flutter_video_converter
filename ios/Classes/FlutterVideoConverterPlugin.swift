@@ -47,8 +47,6 @@ import AVFoundation
       let quality = args["quality"] as? String ?? "medium"
       let customOutputPath = args["customOutputPath"] as? String
       
-      print("Converting video, format: \(format), quality: \(quality)")
-      
       convertVideoWithOptions(
         videoPath: videoPath,
         format: format,
@@ -211,12 +209,10 @@ import AVFoundation
       }
     case "prores", "pro_res":
       // Handle ProRes format - fallback to MOV container which supports ProRes codec
-      print("ProRes format requested, using MOV container")
       fileType = .mov
       fileExtension = "mov"
     case "mpg", "mpeg", "avi", "webm", "flv", "wmv", "mkv":
       // These formats aren't natively supported, fallback to mp4
-      print("Format \(format) not directly supported on iOS, converting to mp4")
       fileType = .mp4
       fileExtension = "mp4"
     default:
@@ -254,7 +250,6 @@ import AVFoundation
         }
       } catch {
         // Continue with conversion if we can't get file attributes
-        print("Failed to check existing file: \(error.localizedDescription)")
       }
     }
     
@@ -269,7 +264,6 @@ import AVFoundation
         sourceFileSize = size.uint64Value
       }
     } catch {
-      print("Failed to get source file size: \(error.localizedDescription)")
     }
     
     // Determine quality preset based on quality parameter
@@ -310,9 +304,6 @@ import AVFoundation
             if compatiblePresets.contains(AVAssetExportPresetAppleProRes422LPCM) {
               preferredPresets.insert(AVAssetExportPresetAppleProRes422LPCM, at: 0)
             }
-          } else {
-            // For earlier iOS versions, use highest quality as a fallback
-            print("ProRes format not available on this iOS version, using highest quality")
           }
         }
       }
@@ -339,7 +330,6 @@ import AVFoundation
     for preset in preferredPresets {
       if compatiblePresets.contains(preset) {
         selectedPreset = preset
-        print("Using preset: \(preset)")
         break
       }
     }
@@ -358,11 +348,10 @@ import AVFoundation
     // This ensures identical file size output
     if quality.lowercased() == "high" && selectedPreset != AVAssetExportPresetPassthrough {
       // For high quality, we want to preserve the bitrate as much as possible
-      print("High quality conversion, preserving maximum bitrate")
     } else if quality.lowercased() == "medium" {
-      print("Medium quality conversion, balanced bitrate")
+      // Medium quality conversion, balanced bitrate
     } else if quality.lowercased() == "low" {
-      print("Low quality conversion, reduced bitrate")
+      // Low quality conversion, reduced bitrate
     }
     
     // Set the time range to the full duration of the asset
@@ -372,7 +361,6 @@ import AVFoundation
     
     // Check if the selected file type is supported for this asset
     if !exportSession.supportedFileTypes.contains(fileType) {
-      print("Selected file type \(fileType) not supported, falling back to mp4")
       exportSession.outputFileType = .mp4
     }
     
@@ -384,14 +372,12 @@ import AVFoundation
       // Check if there are any rotation transformations that need to be maintained
       if !preferredTransform.isIdentity {
         // The video has rotation/orientation that needs to be preserved
-        print("Video has custom orientation/rotation, preserving in output")
       }
       
       // Handle bitrate and dimension preservation to match source more exactly
       // This helps ensure the output file size is consistent with photo_manager's output
       if selectedPreset == AVAssetExportPresetPassthrough || selectedPreset == AVAssetExportPresetHighestQuality {
         // When using highest quality or passthrough, we want to preserve as much information as possible
-        print("Using high quality preset, preserving maximum video information")
       }
     }
     
@@ -431,7 +417,6 @@ import AVFoundation
         if let outputFileAttributes = try? FileManager.default.attributesOfItem(atPath: outputURL.path),
            let outputFileSize = outputFileAttributes[.size] as? NSNumber {
           let compressionRatio = Double(outputFileSize.uint64Value) / Double(sourceFileSize)
-          print("Conversion complete. Source: \(sourceFileSize / 1024) KB, Output: \(outputFileSize.uint64Value / 1024) KB, Ratio: \(compressionRatio)")
           
           // Register file with NSFileManager by setting additional attributes
           let fileManager = FileManager.default
@@ -444,7 +429,6 @@ import AVFoundation
           do {
             try fileManager.setAttributes(fileAttributes, ofItemAtPath: outputURL.path)
           } catch {
-            print("Warning: Could not set file attributes: \(error.localizedDescription)")
           }
           
           // Add to NSFileManager's ubiquitous item list if needed
@@ -456,7 +440,6 @@ import AVFoundation
               var url = outputURL
               try url.setResourceValues(resourceValues)
             } catch {
-              print("Warning: Could not mark file as excluded from backup: \(error.localizedDescription)")
             }
           }
         }
@@ -464,11 +447,8 @@ import AVFoundation
       
       switch exportSession.status {
       case .completed:
-        print("Conversion successful. Output path: \(outputURL.path)")
         completion(outputURL.path, nil)
       case .failed:
-        print("Export failed: \(String(describing: exportSession.error?.localizedDescription))")
-        print("Error details: \(String(describing: exportSession.error))")
         completion(nil, exportSession.error)
       case .cancelled:
         completion(nil, NSError(domain: "VideoConverter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Export cancelled"]))
@@ -522,13 +502,9 @@ import AVFoundation
             var url = URL(fileURLWithPath: videoDir)
             try url.setResourceValues(resourceValues)
           } catch {
-            print("Warning: Could not mark directory as excluded from backup: \(error.localizedDescription)")
           }
         }
-        
-        print("Created video cache directory at: \(videoDir)")
       } catch {
-        print("Error creating video cache directory: \(error.localizedDescription)")
       }
     }
     
